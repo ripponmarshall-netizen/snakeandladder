@@ -10,17 +10,18 @@
   <main class="app">
     <section class="panel">
       <h1>Snakes and Ladders</h1>
-      <p class="sub">Phase 1 · local prototype · start at 0 · exact roll to win</p>
+      <p class="sub">Phase 2 · local prototype · five rotating boards · start at 0 · exact roll to win</p>
 
       <div class="stats">
-        <p id="status">Black to roll.</p>
+        <p id="status">Loading game…</p>
+        <p id="boardName">Board: -</p>
         <p id="lastRoll">Last roll: -</p>
         <p id="positions">Black: 0 | White: 0</p>
       </div>
 
       <div class="actions">
         <button id="rollBtn">Roll Dice</button>
-        <button id="resetBtn" class="button-secondary">Reset Game</button>
+        <button id="resetBtn" class="button-secondary">New Random Board</button>
       </div>
 
       <section class="legend">
@@ -31,6 +32,7 @@
           <li>Landing on a ladder moves you up.</li>
           <li>Landing on a snake moves you down.</li>
           <li>You must roll exactly to land on 100.</li>
+          <li>Boards rotate randomly on reset.</li>
         </ul>
       </section>
 
@@ -45,6 +47,6 @@
     </section>
   </main>
 
-  <script src="app.js"></script>
+  <script type="module" src="app.js"></script>
 </body>
 </html>
