@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Monochrome Snakes and Ladders</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="app">
+    <section class="panel">
+      <h1>Snakes and Ladders</h1>
+      <p class="sub">Phase 1 · local prototype · start at 0 · exact roll to win</p>
+
+      <div class="stats">
+        <p id="status">Black to roll.</p>
+        <p id="lastRoll">Last roll: -</p>
+        <p id="positions">Black: 0 | White: 0</p>
+      </div>
+
+      <div class="actions">
+        <button id="rollBtn">Roll Dice</button>
+        <button id="resetBtn" class="button-secondary">Reset Game</button>
+      </div>
+
+      <section class="legend">
+        <h2>Rules</h2>
+        <ul>
+          <li>Both players start at 0.</li>
+          <li>Roll 1–6 and move forward.</li>
+          <li>Landing on a ladder moves you up.</li>
+          <li>Landing on a snake moves you down.</li>
+          <li>You must roll exactly to land on 100.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Move Log</h2>
+        <div id="log" class="log"></div>
+      </section>
+    </section>
+
+    <section class="board-panel">
+      <div id="board" class="board" aria-label="Snakes and Ladders board"></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
