@@ -1,6 +1,8 @@
 import { boards } from "./boards.js";
+import { ensureSignedIn, getCurrentUser } from "./supabase.js";
 
 const boardEl = document.getElementById("board");
+const authStatusEl = document.getElementById("authStatus");
 const statusEl = document.getElementById("status");
 const boardNameEl = document.getElementById("boardName");
 const lastRollEl = document.getElementById("lastRoll");
@@ -236,7 +238,27 @@ function resetGame() {
   updateUI();
 }
 
-validateBoardSet();
+async function boot() {
+  try {
+    validateBoardSet();
+
+    const session = await ensureSignedIn();
+    const user = await getCurrentUser();
+
+    authStatusEl.textContent = `Signed in anonymously: ${user?.id?.slice(0, 8) ?? "unknown"}…`;
+    logMessage(`Supabase session ready: ${session?.user?.id?.slice(0, 8) ?? "unknown"}…`);
+
+    resetGame();
+  } catch (error) {
+    console.error(error);
+    authStatusEl.textContent = "Supabase connection failed.";
+    statusEl.textContent = "Check your Supabase URL, anon key, and Anonymous Auth settings.";
+    rollBtn.disabled = true;
+    resetBtn.disabled = true;
+  }
+}
+
 rollBtn.addEventListener("click", takeTurn);
 resetBtn.addEventListener("click", resetGame);
-resetGame();
+
+boot();
