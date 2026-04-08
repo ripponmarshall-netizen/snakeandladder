@@ -15,7 +15,7 @@ const resetBtn = document.getElementById("resetBtn");
 */
 const jumps = {
   3: 22,
-  5: 8,
+  5: 14,
   11: 26,
   20: 29,
   27: 46,
