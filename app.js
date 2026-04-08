@@ -6,19 +6,26 @@ const logEl = document.getElementById("log");
 const rollBtn = document.getElementById("rollBtn");
 const resetBtn = document.getElementById("resetBtn");
 
+/*
+  Valid jumps:
+  - vertical
+  - diagonal
+  Invalid jumps:
+  - horizontal only (same board row)
+*/
 const jumps = {
   3: 22,
   5: 8,
   11: 26,
   20: 29,
+  27: 46,
+  36: 55,
   43: 77,
   50: 91,
-  57: 76,
-  72: 84,
   17: 4,
   19: 7,
   21: 9,
-  27: 1,
+  32: 14,
   54: 34,
   62: 18,
   64: 60,
@@ -41,7 +48,26 @@ const initialGameState = () => ({
 let game = initialGameState();
 
 function rollDie() {
-  return Math.floor(Math.random() * 6) + 1;
+  return cryptoRandomInt(1, 6);
+}
+
+function cryptoRandomInt(min, max) {
+  const range = max - min + 1;
+  if (range <= 0) throw new Error("Invalid random range.");
+
+  const maxUint32 = 0xFFFFFFFF;
+  const bucketSize = Math.floor((maxUint32 + 1) / range);
+  const limit = bucketSize * range;
+
+  const values = new Uint32Array(1);
+  let randomNumber;
+
+  do {
+    crypto.getRandomValues(values);
+    randomNumber = values[0];
+  } while (randomNumber >= limit);
+
+  return min + Math.floor(randomNumber / bucketSize);
 }
 
 function getCellNumber(rowFromTop, col) {
@@ -49,6 +75,23 @@ function getCellNumber(rowFromTop, col) {
   const rowStart = rowFromBottom * 10 + 1;
   const leftToRight = rowFromBottom % 2 === 0;
   return leftToRight ? rowStart + col : rowStart + (9 - col);
+}
+
+function getBoardPosition(square) {
+  if (square < 1 || square > 100) return null;
+
+  const zeroBased = square - 1;
+  const rowFromBottom = Math.floor(zeroBased / 10);
+  const colInRow = zeroBased % 10;
+  const col = rowFromBottom % 2 === 0 ? colInRow : 9 - colInRow;
+
+  return { rowFromBottom, col };
+}
+
+function isHorizontalOnlyJump(from, to) {
+  const fromPos = getBoardPosition(from);
+  const toPos = getBoardPosition(to);
+  return fromPos.rowFromBottom === toPos.rowFromBottom;
 }
 
 function renderBoard() {
@@ -68,6 +111,18 @@ function renderBoard() {
       numberEl.className = "cell-number";
       numberEl.textContent = number;
       cell.appendChild(numberEl);
+
+      const jumpTarget = jumps[number];
+      if (jumpTarget) {
+        const marker = document.createElement("div");
+        marker.style.position = "absolute";
+        marker.style.left = "6px";
+        marker.style.top = "22px";
+        marker.style.fontSize = "0.62rem";
+        marker.style.color = "#5e5e5e";
+        marker.textContent = jumpTarget > number ? `L→${jumpTarget}` : `S→${jumpTarget}`;
+        cell.appendChild(marker);
+      }
 
       const playersHere = game.players.filter(player => player.position === number);
       if (playersHere.length > 0) {
@@ -91,10 +146,13 @@ function renderBoard() {
 
 function renderOffBoardTokens() {
   const zeroPlayers = game.players.filter(player => player.position === 0);
-  if (zeroPlayers.length === 0) return;
-
   const panel = document.querySelector(".stats");
   let dock = document.getElementById("startDock");
+
+  if (zeroPlayers.length === 0) {
+    if (dock) dock.remove();
+    return;
+  }
 
   if (!dock) {
     dock = document.createElement("div");
@@ -142,19 +200,60 @@ function updateUI() {
 }
 
 function applyJump(position) {
-  if (!jumps[position]) return { finalPosition: position, message: null };
+  if (!jumps[position]) {
+    return { finalPosition: position, message: null };
+  }
 
   const destination = jumps[position];
+
+  if (isHorizontalOnlyJump(position, destination)) {
+    throw new Error(
+      `Invalid jump: ${position} -> ${destination} is horizontal-only, which is not allowed.`
+    );
+  }
+
   const type = destination > position ? "ladder" : "snake";
+  const fromPos = getBoardPosition(position);
+  const toPos = getBoardPosition(destination);
+
+  let shape = "vertical";
+  if (fromPos.col !== toPos.col) shape = "diagonal";
+
   const message =
     type === "ladder"
-      ? `Climbed a ladder from ${position} to ${destination}.`
-      : `Hit a snake from ${position} down to ${destination}.`;
+      ? `Climbed a ${shape} ladder from ${position} to ${destination}.`
+      : `Hit a ${shape} snake from ${position} down to ${destination}.`;
 
   return {
     finalPosition: destination,
     message
   };
+}
+
+function validateJumpMap() {
+  const seenSources = new Set();
+
+  Object.entries(jumps).forEach(([fromRaw, to]) => {
+    const from = Number(fromRaw);
+
+    if (from < 1 || from > 100 || to < 1 || to > 100) {
+      throw new Error(`Jump out of range: ${from} -> ${to}`);
+    }
+
+    if (from === to) {
+      throw new Error(`Jump cannot point to itself: ${from} -> ${to}`);
+    }
+
+    if (seenSources.has(from)) {
+      throw new Error(`Duplicate jump source detected at square ${from}`);
+    }
+
+    if (isHorizontalOnlyJump(from, to)) {
+      throw new Error(`Horizontal-only jump not allowed: ${from} -> ${to}`);
+    }
+
+    seenSources.add(from);
+  });
 }
 
 function takeTurn() {
@@ -205,7 +304,7 @@ function resetGame() {
   updateUI();
 }
 
+validateJumpMap();
 rollBtn.addEventListener("click", takeTurn);
 resetBtn.addEventListener("click", resetGame);
-
 resetGame();
