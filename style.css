@@ -11,6 +11,7 @@
   --muted: #5e5e5e;
   --line: #1d1d1d;
   --soft: #d8d8d3;
+  --jump: #ecece7;
   --shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
 }
 
@@ -149,7 +150,35 @@ button:disabled {
 }
 
 .cell.has-jump {
-  background: #f0f0eb;
+  background: var(--jump);
+}
+
+.cell-start::after {
+  content: "START";
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  font-size: 0.6rem;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.cell-end::after {
+  content: "WIN";
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  font-size: 0.6rem;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.jump-label {
+  position: absolute;
+  left: 6px;
+  top: 22px;
+  font-size: 0.62rem;
+  color: var(--muted);
 }
 
 .tokens {
@@ -174,26 +203,6 @@ button:disabled {
 
 .token.white {
   background: #fff;
-}
-
-.cell-start::after {
-  content: "START";
-  position: absolute;
-  left: 6px;
-  bottom: 6px;
-  font-size: 0.6rem;
-  letter-spacing: 0.05em;
-  color: var(--muted);
-}
-
-.cell-end::after {
-  content: "WIN";
-  position: absolute;
-  left: 6px;
-  bottom: 6px;
-  font-size: 0.6rem;
-  letter-spacing: 0.05em;
-  color: var(--muted);
 }
 
 @media (max-width: 900px) {
