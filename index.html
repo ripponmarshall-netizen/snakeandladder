@@ -10,9 +10,10 @@
   <main class="app">
     <section class="panel">
       <h1>Snakes and Ladders</h1>
-      <p class="sub">Phase 2 · local prototype · five rotating boards · start at 0 · exact roll to win</p>
+      <p class="sub">Phase 3 · Supabase auth wired in · five rotating boards · start at 0 · exact roll to win</p>
 
       <div class="stats">
+        <p id="authStatus">Connecting to Supabase…</p>
         <p id="status">Loading game…</p>
         <p id="boardName">Board: -</p>
         <p id="lastRoll">Last roll: -</p>
@@ -33,6 +34,7 @@
           <li>Landing on a snake moves you down.</li>
           <li>You must roll exactly to land on 100.</li>
           <li>Boards rotate randomly on reset.</li>
+          <li>Supabase auth is enabled for the next backend phases.</li>
         </ul>
       </section>
 
