@@ -1,44 +1,13 @@
+import { boards } from "./boards.js";
+
 const boardEl = document.getElementById("board");
 const statusEl = document.getElementById("status");
+const boardNameEl = document.getElementById("boardName");
 const lastRollEl = document.getElementById("lastRoll");
 const positionsEl = document.getElementById("positions");
 const logEl = document.getElementById("log");
 const rollBtn = document.getElementById("rollBtn");
 const resetBtn = document.getElementById("resetBtn");
-
-const jumps = {
-  3: 22,
-  5: 14,
-  11: 26,
-  20: 29,
-  27: 46,
-  36: 55,
-  43: 77,
-  50: 91,
-  17: 4,
-  19: 7,
-  21: 9,
-  32: 14,
-  54: 34,
-  62: 18,
-  64: 60,
-  87: 24,
-  95: 75,
-  99: 78
-};
-
-const createGame = () => ({
-  currentPlayer: 0,
-  players: [
-    { name: "Black", color: "black", position: 0 },
-    { name: "White", color: "white", position: 0 }
-  ],
-  lastRoll: null,
-  winner: null,
-  turnCount: 1
-});
-
-let game = createGame();
 
 function getCellNumber(rowFromTop, col) {
   const rowFromBottom = 9 - rowFromTop;
@@ -58,20 +27,22 @@ function isHorizontalJump(from, to) {
   return getBoardPosition(from).rowFromBottom === getBoardPosition(to).rowFromBottom;
 }
 
-function validateJumpMap() {
-  for (const [fromRaw, to] of Object.entries(jumps)) {
-    const from = Number(fromRaw);
+function validateBoardSet() {
+  for (const board of boards) {
+    for (const [fromRaw, to] of Object.entries(board.jumps)) {
+      const from = Number(fromRaw);
 
-    if (from < 1 || from > 100 || to < 1 || to > 100) {
-      throw new Error(`Jump out of range: ${from} -> ${to}`);
-    }
+      if (from < 1 || from > 100 || to < 1 || to > 100) {
+        throw new Error(`Board ${board.id}: jump out of range ${from} -> ${to}`);
+      }
 
-    if (from === to) {
-      throw new Error(`Jump cannot point to itself: ${from} -> ${to}`);
-    }
+      if (from === to) {
+        throw new Error(`Board ${board.id}: self jump ${from} -> ${to}`);
+      }
 
-    if (isHorizontalJump(from, to)) {
-      throw new Error(`Horizontal jump not allowed: ${from} -> ${to}`);
+      if (isHorizontalJump(from, to)) {
+        throw new Error(`Board ${board.id}: horizontal jump ${from} -> ${to} is not allowed`);
+      }
     }
   }
 }
@@ -94,6 +65,26 @@ function cryptoRandomInt(min, max) {
 function rollDie() {
   return cryptoRandomInt(1, 6);
 }
+
+function randomBoard() {
+  return boards[cryptoRandomInt(0, boards.length - 1)];
+}
+
+function createGame() {
+  return {
+    currentPlayer: 0,
+    players: [
+      { name: "Black", color: "black", position: 0 },
+      { name: "White", color: "white", position: 0 }
+    ],
+    lastRoll: null,
+    winner: null,
+    turnCount: 1,
+    board: randomBoard()
+  };
+}
+
+let game = createGame();
 
 function logMessage(message) {
   const entry = document.createElement("div");
@@ -130,6 +121,7 @@ function renderStartTokens() {
 
 function renderBoard() {
   boardEl.innerHTML = "";
+  const jumps = game.board.jumps;
 
   for (let row = 0; row < 10; row++) {
     for (let col = 0; col < 10; col++) {
@@ -148,11 +140,7 @@ function renderBoard() {
 
       if (jumps[number]) {
         const jumpEl = document.createElement("div");
-        jumpEl.style.position = "absolute";
-        jumpEl.style.left = "6px";
-        jumpEl.style.top = "22px";
-        jumpEl.style.fontSize = "0.62rem";
-        jumpEl.style.color = "#5e5e5e";
+        jumpEl.className = "jump-label";
         jumpEl.textContent = jumps[number] > number ? `L→${jumps[number]}` : `S→${jumps[number]}`;
         cell.appendChild(jumpEl);
       }
@@ -181,6 +169,7 @@ function updateUI() {
   renderBoard();
   renderStartTokens();
 
+  boardNameEl.textContent = `Board: ${game.board.name}`;
   positionsEl.textContent = `Black: ${game.players[0].position} | White: ${game.players[1].position}`;
   lastRollEl.textContent = `Last roll: ${game.lastRoll ?? "-"}`;
 
@@ -195,9 +184,7 @@ function updateUI() {
 }
 
 function applyJump(position) {
-  const destination = jumps[position];
-  if (!destination) return position;
-  return destination;
+  return game.board.jumps[position] ?? position;
 }
 
 function takeTurn() {
@@ -245,11 +232,11 @@ function takeTurn() {
 function resetGame() {
   game = createGame();
   logEl.innerHTML = "";
-  logMessage("Game reset. Black starts. Both players begin at 0.");
+  logMessage(`Game reset. New board: ${game.board.name}. Black starts. Both players begin at 0.`);
   updateUI();
 }
 
-validateJumpMap();
+validateBoardSet();
 rollBtn.addEventListener("click", takeTurn);
 resetBtn.addEventListener("click", resetGame);
 resetGame();
