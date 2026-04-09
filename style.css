@@ -25,10 +25,10 @@ body {
 
 .app {
   display: grid;
-  grid-template-columns: 340px minmax(0, 1fr);
+  grid-template-columns: 360px minmax(0, 1fr);
   gap: 24px;
   padding: 24px;
-  max-width: 1400px;
+  max-width: 1440px;
   margin: 0 auto;
 }
 
@@ -50,7 +50,8 @@ body {
 h1,
 h2,
 p,
-ul {
+ul,
+label {
   margin-top: 0;
 }
 
@@ -72,15 +73,37 @@ h2 {
   margin-bottom: 20px;
 }
 
-.stats p {
+.stats p,
+.legend p {
   margin-bottom: 8px;
+}
+
+.room-controls {
+  margin: 20px 0;
+}
+
+label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 0.95rem;
+}
+
+input {
+  width: 100%;
+  border: 2px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  padding: 12px;
+  font: inherit;
+  margin-bottom: 12px;
+  min-height: 44px;
 }
 
 .actions {
   display: flex;
   gap: 12px;
   flex-wrap: wrap;
-  margin: 20px 0;
+  margin: 12px 0 16px;
 }
 
 button {
@@ -106,11 +129,6 @@ button:disabled {
 .button-secondary {
   background: #fff;
   color: var(--ink);
-}
-
-.legend ul {
-  padding-left: 18px;
-  color: var(--muted);
 }
 
 .log {
