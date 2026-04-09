@@ -230,29 +230,27 @@ async function createRoom() {
 
   const code = await createUniqueRoomCode();
   const board = randomBoard();
+  const roomId = crypto.randomUUID();
 
-  const {  room, error: roomError } = await supabase
+  const roomPayload = {
+    id: roomId,
+    code,
+    created_by: currentUser.id,
+    status: "waiting"
+  };
+
+  const { error: roomError } = await supabase
     .from("rooms")
-    .insert({
-      code,
-      created_by: currentUser.id,
-      status: "waiting"
-    })
-    .select()
-    .single();
+    .insert(roomPayload);
 
   if (roomError) {
     throw new Error(`Room creation failed: ${roomError.message}`);
   }
 
-  if (!room) {
-    throw new Error("Room creation returned no room.");
-  }
-
   const {  membership, error: membershipError } = await supabase
     .from("room_players")
     .insert({
-      room_id: room.id,
+      room_id: roomId,
       user_id: currentUser.id,
       player_name: playerName,
       role: "player1"
@@ -264,10 +262,14 @@ async function createRoom() {
     throw new Error(`Room membership creation failed: ${membershipError.message}`);
   }
 
+  if (!membership) {
+    throw new Error("Room membership creation returned no membership.");
+  }
+
   const {  game, error: gameError } = await supabase
     .from("games")
     .insert({
-      room_id: room.id,
+      room_id: roomId,
       board_id: board.id,
       current_turn: "player1",
       player1_position: 0,
@@ -280,12 +282,16 @@ async function createRoom() {
     throw new Error(`Game creation failed: ${gameError.message}`);
   }
 
-  currentRoom = room;
+  if (!game) {
+    throw new Error("Game creation returned no game.");
+  }
+
+  currentRoom = roomPayload;
   currentMembership = membership;
   currentGame = game;
   currentPlayers = [membership];
 
-  logMessage(`Created room ${room.code} as player1 on ${board.name}.`);
+  logMessage(`Created room ${code} as player1 on ${board.name}.`);
   updateUI();
 }
 
