@@ -25,6 +25,8 @@ let currentMembership = null;
 let currentGame = null;
 let currentPlayers = [];
 let realtimeChannel = null;
+let gamePollingInterval = null;
+let isRolling = false;
 
 /* ── Board helpers ── */
 
@@ -225,6 +227,42 @@ function updateUI() {
   updatePlayersDisplay();
 }
 
+/* ── Polling fallback for Realtime ── */
+
+function startPolling(roomId) {
+  stopPolling();
+  gamePollingInterval = setInterval(async function () {
+    if (!currentGame || isRolling) return;
+    try {
+      var { data: game } = await supabase
+        .from("games")
+        .select("*")
+        .eq("room_id", roomId)
+        .maybeSingle();
+      if (game) {
+        currentGame = game;
+      }
+      var { data: players } = await supabase
+        .from("room_players")
+        .select("*")
+        .eq("room_id", roomId);
+      if (Array.isArray(players)) {
+        currentPlayers = players;
+      }
+      updateUI();
+    } catch (e) {
+      /* silently ignore polling errors */
+    }
+  }, 3000);
+}
+
+function stopPolling() {
+  if (gamePollingInterval) {
+    clearInterval(gamePollingInterval);
+    gamePollingInterval = null;
+  }
+}
+
 /* ── Room creation ── */
 
 async function createUniqueRoomCode() {
@@ -379,10 +417,6 @@ async function joinRoom() {
       throw new Error("No room found with code " + code + ".");
     }
 
-    if (room.status !== "waiting") {
-      throw new Error("This room is no longer accepting players.");
-    }
-
     /* Check existing players */
     const { data: players, error: playersError } = await supabase
       .from("room_players")
@@ -395,7 +429,7 @@ async function joinRoom() {
 
     const safePlayers = Array.isArray(players) ? players : [];
 
-    /* Already in this room? Rejoin. */
+    /* Already in this room? Rejoin regardless of room status. */
     const existing = safePlayers.find(function(p) { return p.user_id === currentUser.id; });
     if (existing) {
       currentRoom = room;
@@ -405,6 +439,11 @@ async function joinRoom() {
       subscribeToRoom(room.id);
       await loadRoomState(code);
       return;
+    }
+
+    /* Only enforce status for brand-new joins */
+    if (room.status !== "waiting") {
+      throw new Error("This room is no longer accepting players.");
     }
 
     if (safePlayers.length >= 2) {
@@ -476,6 +515,7 @@ async function rollDice() {
 
   if (rollDiceBtn) rollDiceBtn.disabled = true;
   setButtonsDisabled(true);
+  isRolling = true;
 
   try {
     /* ── Re-fetch latest game state before rolling ── */
@@ -540,15 +580,17 @@ async function rollDice() {
         "Rolled " + roll + " but need exactly " + (100 - currentPos) + " to win. Stay at " + currentPos + "."
       );
 
-      const { error } = await supabase
+      const { data: confirmedGame, error } = await supabase
         .from("games")
         .update({ last_roll: roll, current_turn: nextTurn })
-        .eq("id", currentGame.id);
+        .eq("id", currentGame.id)
+        .select()
+        .maybeSingle();
 
       if (error) throw new Error("Update failed: " + error.message);
+      if (!confirmedGame) throw new Error("Dice roll blocked \u2014 check Supabase RLS UPDATE policy on the games table.");
 
-      currentGame.last_roll = roll;
-      currentGame.current_turn = nextTurn;
+      currentGame = confirmedGame;
       return;
     }
 
@@ -577,24 +619,24 @@ async function rollDice() {
       updatePayload.winner = winner;
     }
 
-    const { error } = await supabase
+    const { data: confirmedGame, error } = await supabase
       .from("games")
       .update(updatePayload)
-      .eq("id", currentGame.id);
+      .eq("id", currentGame.id)
+      .select()
+      .maybeSingle();
 
     if (error) throw new Error("Update failed: " + error.message);
+    if (!confirmedGame) throw new Error("Dice roll blocked \u2014 check Supabase RLS UPDATE policy on the games table.");
 
-    /* Optimistic local state (realtime will confirm) */
-    currentGame[posKey] = newPos;
-    currentGame.last_roll = roll;
-    currentGame.current_turn = updatePayload.current_turn;
+    currentGame = confirmedGame;
 
     if (winner) {
-      currentGame.winner = winner;
       const winnerPlayer = currentPlayers.find(function(p) { return p.role === winner; });
       logMessage((winnerPlayer?.player_name ?? winner) + " wins the game!");
     }
   } finally {
+    isRolling = false;
     setButtonsDisabled(false);
     updateUI();
   }
@@ -619,7 +661,7 @@ function subscribeToRoom(roomId) {
         filter: "room_id=eq." + roomId
       },
       function(payload) {
-        if (payload.new) {
+        if (payload.new && !isRolling) {
           currentGame = payload.new;
           logMessage("Game state updated.");
           updateUI();
@@ -652,6 +694,9 @@ function subscribeToRoom(roomId) {
         logMessage("Realtime connected.");
       }
     });
+
+  /* Polling fallback in case Realtime replication is not enabled */
+  startPolling(roomId);
 }
 
 /* ── Load room state ── */
