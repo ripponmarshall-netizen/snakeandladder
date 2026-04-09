@@ -30,21 +30,21 @@
     <header class="room-bar">
       <span class="room-tag">ROOM</span>
       <span id="roomCodeDisplay" class="room-code">------</span>
-      <button id="copyCodeBtn" class="bar-btn">Copy</button>
-      <button id="refreshRoomBtn" class="bar-btn">Refresh</button>
+      <button id="copyCodeBtn" class="bar-btn" aria-label="Copy room code">Copy</button>
+      <button id="refreshRoomBtn" class="bar-btn" aria-label="Refresh room state">Refresh</button>
     </header>
 
     <div class="player-strip">
       <div id="p1Card" class="p-card">
-        <div class="p-dot black"></div>
+        <div class="p-dot black" aria-hidden="true"></div>
         <div class="p-info">
           <span class="p-name" id="p1Name">Player 1</span>
           <span class="p-pos" id="p1Pos">Start</span>
         </div>
       </div>
-      <span class="vs-label">vs</span>
+      <span class="vs-label" aria-hidden="true">vs</span>
       <div id="p2Card" class="p-card">
-        <div class="p-dot white"></div>
+        <div class="p-dot white" aria-hidden="true"></div>
         <div class="p-info">
           <span class="p-name" id="p2Name">Waiting&hellip;</span>
           <span class="p-pos" id="p2Pos">&mdash;</span>
@@ -52,7 +52,7 @@
       </div>
     </div>
 
-    <div id="turnBanner" class="turn-banner state-wait">
+    <div id="turnBanner" class="turn-banner state-wait" aria-live="polite">
       <span id="turnText">Waiting for opponent&hellip;</span>
     </div>
 
@@ -61,8 +61,8 @@
         <div id="board" class="board" aria-label="Game board"></div>
       </div>
       <div class="side-col">
-        <div id="dice" class="dice">
-          <span id="diceChar" class="dice-val">?</span>
+        <div id="dice" class="dice" aria-label="Dice">
+          <span id="diceChar" class="dice-val" aria-live="polite">?</span>
         </div>
         <p id="lastAction" class="side-hint">Roll to start</p>
         <button id="rollDiceBtn" class="roll-btn" disabled>Roll</button>
@@ -70,20 +70,20 @@
       </div>
     </div>
 
-    <div id="actionToast" class="toast hidden">
+    <div id="actionToast" class="toast hidden" role="status" aria-live="polite">
       <span id="toastText"></span>
     </div>
 
     <details class="log-panel">
       <summary>Move log</summary>
-      <div id="log" class="log"></div>
+      <div id="log" class="log" role="log"></div>
     </details>
   </div>
 
   <!-- WIN OVERLAY -->
-  <div id="winOverlay" class="win-overlay hidden">
+  <div id="winOverlay" class="win-overlay hidden" role="dialog" aria-labelledby="winTitle">
     <div class="win-box">
-      <div class="win-crown">👑</div>
+      <div class="win-crown" aria-hidden="true">\uD83D\uDC51</div>
       <h2 id="winTitle">Victory!</h2>
       <p id="winMessage">&mdash;</p>
       <button id="newGameBtn" class="btn btn-primary">New Game</button>

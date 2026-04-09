@@ -52,10 +52,11 @@ let realtimeChannel = null;
 let toastTimer = null;
 let prevP1Pos = 0;
 let prevP2Pos = 0;
+let animateMoves = false;
 
 const DICE_FACES = ["", "\u2680", "\u2681", "\u2682", "\u2683", "\u2684", "\u2685"];
 
-/* ── Board helpers (unchanged) ── */
+/* ── Board helpers ── */
 
 function getCellNumber(rowFromTop, col) {
   const rowFromBottom = 9 - rowFromTop;
@@ -92,7 +93,7 @@ function validateBoardSet() {
   }
 }
 
-/* ── Utilities (unchanged) ── */
+/* ── Utilities ── */
 
 function logMessage(message) {
   const entry = document.createElement("div");
@@ -137,7 +138,7 @@ function setButtonsDisabled(disabled) {
   refreshRoomBtn.disabled = disabled;
 }
 
-/* ── UI helpers (NEW) ── */
+/* ── UI helpers ── */
 
 function showGameScreen() {
   lobbyEl.classList.add("hidden");
@@ -156,11 +157,11 @@ function showToast(msg) {
 function animateDice(value) {
   diceCharEl.textContent = DICE_FACES[value] || "?";
   diceEl.classList.remove("rolling");
-  void diceEl.offsetWidth; /* force reflow */
+  void diceEl.offsetWidth;
   diceEl.classList.add("rolling");
 }
 
-/* ── Rendering (updated) ── */
+/* ── Rendering ── */
 
 function renderBoard() {
   boardEl.innerHTML = "";
@@ -198,7 +199,7 @@ function renderBoard() {
 
       if (number === 100) {
         const tag = document.createElement("div");
-        tag.className = "cell-tag win-tag";
+        tag.className = "cell-tag";
         tag.textContent = "WIN";
         cell.appendChild(tag);
       }
@@ -220,8 +221,10 @@ function renderBoard() {
         here.forEach(function (color) {
           const tk = document.createElement("div");
           tk.className = "token " + color;
-          if (color === "black" && p1Pos !== prevP1Pos) tk.classList.add("bounce");
-          if (color === "white" && p2Pos !== prevP2Pos) tk.classList.add("bounce");
+          if (animateMoves) {
+            if (color === "black" && p1Pos !== prevP1Pos) tk.classList.add("bounce");
+            if (color === "white" && p2Pos !== prevP2Pos) tk.classList.add("bounce");
+          }
           wrap.appendChild(tk);
         });
         cell.appendChild(wrap);
@@ -233,6 +236,7 @@ function renderBoard() {
 
   prevP1Pos = p1Pos;
   prevP2Pos = p2Pos;
+  animateMoves = false;
 }
 
 function updateUI() {
@@ -253,15 +257,15 @@ function updateUI() {
   }
 
   /* Player cards */
-  var p1 = currentPlayers.find(function (p) { return p.role === "player1"; });
-  var p2 = currentPlayers.find(function (p) { return p.role === "player2"; });
+  const p1 = currentPlayers.find(function (p) { return p.role === "player1"; });
+  const p2 = currentPlayers.find(function (p) { return p.role === "player2"; });
 
   p1NameEl.textContent = p1?.player_name ?? "Player 1";
   p2NameEl.textContent = p2?.player_name ?? "Waiting\u2026";
   p1PosEl.textContent = currentGame ? "Sq " + (currentGame.player1_position || 0) : "Start";
   p2PosEl.textContent = currentGame && p2 ? "Sq " + (currentGame.player2_position || 0) : "\u2014";
 
-  var isMyTurn =
+  const isMyTurn =
     currentGame &&
     !currentGame.winner &&
     currentPlayers.length === 2 &&
@@ -275,7 +279,7 @@ function updateUI() {
   turnBannerEl.classList.remove("state-go", "state-wait", "state-win");
 
   if (currentGame?.winner) {
-    var wp = currentPlayers.find(function (p) { return p.role === currentGame.winner; });
+    const wp = currentPlayers.find(function (p) { return p.role === currentGame.winner; });
     turnTextEl.textContent = (wp?.player_name ?? currentGame.winner) + " wins!";
     turnBannerEl.classList.add("state-win");
     winMessageEl.textContent = (wp?.player_name ?? currentGame.winner) + " reached square 100!";
@@ -287,19 +291,31 @@ function updateUI() {
     turnTextEl.textContent = "Your turn \u2014 roll the dice!";
     turnBannerEl.classList.add("state-go");
   } else {
-    var opp = currentPlayers.find(function (p) { return p.role === currentGame?.current_turn; });
+    const opp = currentPlayers.find(function (p) { return p.role === currentGame?.current_turn; });
     turnTextEl.textContent = "Waiting for " + (opp?.player_name ?? "opponent") + "\u2026";
     turnBannerEl.classList.add("state-wait");
   }
 
   /* Roll button */
   if (rollDiceBtn) {
-    rollDiceBtn.disabled = !isMyTurn;
-    rollDiceBtn.classList.toggle("pulse", !!isMyTurn);
+    const canRoll = !!isMyTurn;
+    rollDiceBtn.disabled = !canRoll;
+    rollDiceBtn.classList.toggle("pulse", canRoll);
+
+    if (currentGame?.winner) {
+      rollDiceBtn.textContent = "Game Over";
+    } else if (canRoll) {
+      rollDiceBtn.textContent = "Roll";
+    } else {
+      rollDiceBtn.textContent = "Waiting\u2026";
+    }
   }
+
+  /* Dice highlight */
+  diceEl.classList.toggle("your-turn", !!isMyTurn);
 }
 
-/* ── Room creation (logic unchanged) ── */
+/* ── Room creation ── */
 
 async function createUniqueRoomCode() {
   for (let i = 0; i < 10; i += 1) {
@@ -389,7 +405,7 @@ async function createRoom() {
   }
 }
 
-/* ── Join room (logic unchanged) ── */
+/* ── Join room ── */
 
 async function joinRoom() {
   const playerName = playerNameInput.value.trim();
@@ -465,7 +481,7 @@ async function joinRoom() {
   }
 }
 
-/* ── Dice roll (logic unchanged, animation added) ── */
+/* ── Dice roll ── */
 
 async function rollDice() {
   if (!currentRoom) { alert("Join a room first."); return; }
@@ -507,7 +523,7 @@ async function rollDice() {
 
     /* Must land exactly on 100 */
     if (newPos > 100) {
-      var bounceMsg = "Rolled " + roll + " \u2014 need exactly " + (100 - currentPos) + " to win. Stay at " + currentPos + ".";
+      const bounceMsg = "Rolled " + roll + " \u2014 need exactly " + (100 - currentPos) + " to win. Stay at " + currentPos + ".";
       logMessage(bounceMsg);
       showToast(bounceMsg);
 
@@ -519,6 +535,7 @@ async function rollDice() {
 
       currentGame.last_roll = roll;
       currentGame.current_turn = nextTurn;
+      animateMoves = true;
       return;
     }
 
@@ -527,12 +544,12 @@ async function rollDice() {
 
     if (jumpTarget) {
       const jumpType = jumpTarget > newPos ? "Ladder" : "Snake";
-      var jumpMsg = "Rolled " + roll + ". " + jumpType + "! " + newPos + " \u2192 " + jumpTarget;
+      const jumpMsg = "Rolled " + roll + ". " + jumpType + "! " + newPos + " \u2192 " + jumpTarget;
       logMessage(jumpMsg);
       showToast(jumpMsg);
       newPos = jumpTarget;
     } else {
-      var moveMsg = "Rolled " + roll + ". Moved " + currentPos + " \u2192 " + newPos;
+      const moveMsg = "Rolled " + roll + ". Moved " + currentPos + " \u2192 " + newPos;
       logMessage(moveMsg);
       showToast(moveMsg);
     }
@@ -562,13 +579,15 @@ async function rollDice() {
       const winnerPlayer = currentPlayers.find(function (p) { return p.role === winner; });
       logMessage((winnerPlayer?.player_name ?? winner) + " wins the game!");
     }
+
+    animateMoves = true;
   } finally {
     setButtonsDisabled(false);
     updateUI();
   }
 }
 
-/* ── Realtime subscriptions (updated with dice animation) ── */
+/* ── Realtime subscriptions ── */
 
 function subscribeToRoom(roomId) {
   if (realtimeChannel) {
@@ -588,12 +607,13 @@ function subscribeToRoom(roomId) {
       },
       function (payload) {
         if (payload.new) {
-          var prevRoll = currentGame ? currentGame.last_roll : null;
+          const prevRoll = currentGame ? currentGame.last_roll : null;
           currentGame = payload.new;
           if (currentGame.last_roll && currentGame.last_roll !== prevRoll) {
             animateDice(currentGame.last_roll);
           }
           logMessage("Game updated (roll: " + (currentGame.last_roll ?? "-") + ").");
+          animateMoves = true;
           updateUI();
         }
       }
@@ -608,7 +628,7 @@ function subscribeToRoom(roomId) {
       },
       function (payload) {
         if (payload.new) {
-          var exists = currentPlayers.find(function (p) { return p.id === payload.new.id; });
+          const exists = currentPlayers.find(function (p) { return p.id === payload.new.id; });
           if (!exists) {
             currentPlayers.push(payload.new);
             logMessage(payload.new.player_name + " joined as " + payload.new.role + ".");
@@ -625,7 +645,7 @@ function subscribeToRoom(roomId) {
     });
 }
 
-/* ── Load room state (unchanged) ── */
+/* ── Load room state ── */
 
 async function loadRoomState(roomCode) {
   const { data: room, error: roomError } = await supabase
@@ -654,12 +674,16 @@ async function loadRoomState(roomCode) {
     safePlayers.find(function (p) { return p.user_id === currentUser.id; }) ??
     currentMembership;
 
+  /* Sync positions so tokens don't bounce on load/rejoin */
+  prevP1Pos = currentGame?.player1_position ?? 0;
+  prevP2Pos = currentGame?.player2_position ?? 0;
+
   subscribeToRoom(room.id);
   logMessage("Loaded room " + room.code + ".");
   updateUI();
 }
 
-/* ── Boot (unchanged) ── */
+/* ── Boot ── */
 
 async function boot() {
   try {
@@ -690,7 +714,7 @@ joinRoomBtn.addEventListener("click", async function () {
 
 refreshRoomBtn.addEventListener("click", async function () {
   try {
-    var code = currentRoom?.code || roomCodeInput.value.trim().toUpperCase();
+    const code = currentRoom?.code || roomCodeInput.value.trim().toUpperCase();
     if (!code) { alert("No room code available."); return; }
     await loadRoomState(code);
   } catch (e) { console.error(e); logMessage("Error: " + e.message); alert(e.message); }
@@ -701,7 +725,7 @@ rollDiceBtn.addEventListener("click", async function () {
 });
 
 copyCodeBtn.addEventListener("click", function () {
-  var code = currentRoom?.code;
+  const code = currentRoom?.code;
   if (!code) return;
   navigator.clipboard.writeText(code).then(function () {
     showToast("Room code copied!");
@@ -721,8 +745,10 @@ newGameBtn.addEventListener("click", function () {
   currentPlayers = [];
   prevP1Pos = 0;
   prevP2Pos = 0;
+  animateMoves = false;
   diceCharEl.textContent = "?";
   lastActionEl.textContent = "Roll to start";
+  rollDiceBtn.textContent = "Roll";
   logEl.innerHTML = "";
   winOverlayEl.classList.add("hidden");
   gameScreenEl.classList.add("hidden");
