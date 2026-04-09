@@ -22,6 +22,7 @@ let currentUser = null;
 let currentRoom = null;
 let currentMembership = null;
 let currentGame = null;
+let currentPlayers = [];
 
 function getCellNumber(rowFromTop, col) {
   const rowFromBottom = 9 - rowFromTop;
@@ -128,7 +129,7 @@ function renderBoard() {
       if (jumps[number]) {
         const jumpEl = document.createElement("div");
         jumpEl.className = "jump-label";
-        jumpEl.textContent = jumps[number] > number ? `L\u2192${jumps[number]}` : `S\u2192${jumps[number]}`;
+        jumpEl.textContent = jumps[number] > number ? `L→${jumps[number]}` : `S→${jumps[number]}`;
         cell.appendChild(jumpEl);
       }
 
@@ -154,6 +155,19 @@ function renderBoard() {
   }
 }
 
+function updatePlayersDisplay() {
+  if (!currentPlayers.length) {
+    playersDisplayEl.textContent = "Players: -";
+    return;
+  }
+
+  const summary = currentPlayers
+    .map(player => `${player.role}: ${player.player_name}`)
+    .join(" | ");
+
+  playersDisplayEl.textContent = `Players: ${summary}`;
+}
+
 function updateUI() {
   renderBoard();
 
@@ -176,31 +190,43 @@ function updateUI() {
   } else {
     statusEl.textContent = "Game not started.";
   }
+
+  updatePlayersDisplay();
 }
 
-async function createRoom() {
-  const playerName = playerNameInput.value.trim();
-  if (!playerName) {
-    alert("Enter a player name first.");
-    return;
-  }
+async function createUniqueRoomCode() {
+  for (let i = 0; i < 10; i += 1) {
+    const code = generateRoomCode();
 
-  let code = generateRoomCode();
-
-  for (let i = 0; i < 5; i += 1) {
-    const { data: existing } = await supabase
+    const { data, error } = await supabase
       .from("rooms")
       .select("id")
       .eq("code", code)
       .maybeSingle();
 
-    if (!existing) break;
-    code = generateRoomCode();
+    if (error) throw error;
+    if (!data) return code;
   }
 
+  throw new Error("Could not generate a unique room code.");
+}
+
+async function createRoom() {
+  const playerName = playerNameInput.value.trim();
+
+  if (!playerName) {
+    alert("Enter a player name first.");
+    return;
+  }
+
+  if (!currentUser?.id) {
+    throw new Error("No authenticated user found.");
+  }
+
+  const code = await createUniqueRoomCode();
   const board = randomBoard();
 
-  const { data: room, error: roomError } = await supabase
+  const {  room, error: roomError } = await supabase
     .from("rooms")
     .insert({
       code,
@@ -212,7 +238,7 @@ async function createRoom() {
 
   if (roomError) throw roomError;
 
-  const { data: membership, error: membershipError } = await supabase
+  const {  membership, error: membershipError } = await supabase
     .from("room_players")
     .insert({
       room_id: room.id,
@@ -225,7 +251,7 @@ async function createRoom() {
 
   if (membershipError) throw membershipError;
 
-  const { data: game, error: gameError } = await supabase
+  const {  game, error: gameError } = await supabase
     .from("games")
     .insert({
       room_id: room.id,
@@ -242,9 +268,10 @@ async function createRoom() {
   currentRoom = room;
   currentMembership = membership;
   currentGame = game;
+  currentPlayers = [membership];
 
   logMessage(`Created room ${room.code} as player1 on ${board.name}.`);
-  await loadRoomState(room.code);
+  updateUI();
 }
 
 async function joinRoom() {
@@ -261,7 +288,11 @@ async function joinRoom() {
     return;
   }
 
-  const { data: room, error: roomError } = await supabase
+  if (!currentUser?.id) {
+    throw new Error("No authenticated user found.");
+  }
+
+  const {  room, error: roomError } = await supabase
     .from("rooms")
     .select("*")
     .eq("code", code)
@@ -269,53 +300,63 @@ async function joinRoom() {
 
   if (roomError) throw roomError;
 
-  const { data: existingPlayers, error: playersError } = await supabase
+  const {  players, error: playersError } = await supabase
     .from("room_players")
     .select("*")
     .eq("room_id", room.id);
 
   if (playersError) throw playersError;
 
-  if (existingPlayers.length >= 2) {
-    alert("This room is already full.");
-    return;
-  }
-
-  const alreadyInRoom = existingPlayers.find(player => player.user_id === currentUser.id);
+  const alreadyInRoom = players.find(player => player.user_id === currentUser.id);
   if (alreadyInRoom) {
     currentRoom = room;
     currentMembership = alreadyInRoom;
-    await loadRoomState(room.code);
+    currentPlayers = players;
+    await loadRoomState(code);
     return;
   }
 
-  const { data: membership, error: membershipError } = await supabase
+  if (players.length >= 2) {
+    throw new Error("This room is already full.");
+  }
+
+  const takenRoles = new Set(players.map(player => player.role));
+  const role = takenRoles.has("player1") ? "player2" : "player1";
+
+  const {  membership, error: membershipError } = await supabase
     .from("room_players")
     .insert({
       room_id: room.id,
       user_id: currentUser.id,
       player_name: playerName,
-      role: "player2"
+      role
     })
     .select()
     .single();
 
   if (membershipError) throw membershipError;
 
-  await supabase
-    .from("rooms")
-    .update({ status: "active" })
-    .eq("id", room.id);
+  const nextStatus = players.length + 1 >= 2 ? "active" : room.status;
 
-  currentRoom = room;
+  if (room.created_by === currentUser.id) {
+    const { error: roomUpdateError } = await supabase
+      .from("rooms")
+      .update({ status: nextStatus })
+      .eq("id", room.id);
+
+    if (roomUpdateError) throw roomUpdateError;
+  }
+
+  currentRoom = { ...room, status: nextStatus };
   currentMembership = membership;
+  currentPlayers = [...players, membership];
 
-  logMessage(`Joined room ${room.code} as player2.`);
-  await loadRoomState(room.code);
+  logMessage(`Joined room ${room.code} as ${role}.`);
+  await loadRoomState(code);
 }
 
 async function loadRoomState(roomCode) {
-  const { data: room, error: roomError } = await supabase
+  const {  room, error: roomError } = await supabase
     .from("rooms")
     .select("*")
     .eq("code", roomCode)
@@ -323,14 +364,7 @@ async function loadRoomState(roomCode) {
 
   if (roomError) throw roomError;
 
-  const { data: players, error: playersError } = await supabase
-    .from("room_players")
-    .select("*")
-    .eq("room_id", room.id);
-
-  if (playersError) throw playersError;
-
-  const { data: game, error: gameError } = await supabase
+  const {  game, error: gameError } = await supabase
     .from("games")
     .select("*")
     .eq("room_id", room.id)
@@ -338,15 +372,18 @@ async function loadRoomState(roomCode) {
 
   if (gameError) throw gameError;
 
+  const {  players, error: playersError } = await supabase
+    .from("room_players")
+    .select("*")
+    .eq("room_id", room.id);
+
+  if (playersError) throw playersError;
+
   currentRoom = room;
   currentGame = game;
+  currentPlayers = players;
   currentMembership = players.find(player => player.user_id === currentUser.id) ?? null;
 
-  const playerSummary = players
-    .map(player => `${player.role}: ${player.player_name}`)
-    .join(" | ");
-
-  playersDisplayEl.textContent = `Players: ${playerSummary || "-"}`;
   logMessage(`Loaded room ${room.code}.`);
   updateUI();
 }
@@ -358,23 +395,28 @@ async function boot() {
     await ensureSignedIn();
     currentUser = await getCurrentUser();
 
-    authStatusEl.textContent = `Signed in anonymously: ${currentUser.id.slice(0, 8)}\u2026`;
-    logMessage(`Supabase session ready for user ${currentUser.id.slice(0, 8)}\u2026`);
+    if (!currentUser?.id) {
+      throw new Error("Anonymous sign-in succeeded but no user was returned.");
+    }
+
+    authStatusEl.textContent = `Signed in anonymously: ${currentUser.id.slice(0, 8)}…`;
+    logMessage(`Supabase session ready for user ${currentUser.id.slice(0, 8)}…`);
 
     updateUI();
   } catch (error) {
     console.error(error);
     authStatusEl.textContent = "Supabase connection failed.";
     statusEl.textContent = "Check your Supabase URL, anon key, and Anonymous Auth settings.";
+    logMessage(`Boot error: ${error.message}`);
   }
 }
 
 createRoomBtn.addEventListener("click", async () => {
   try {
     await createRoom();
-    updateUI();
   } catch (error) {
     console.error(error);
+    logMessage(`Create room error: ${error.message}`);
     alert(error.message);
   }
 });
@@ -382,9 +424,9 @@ createRoomBtn.addEventListener("click", async () => {
 joinRoomBtn.addEventListener("click", async () => {
   try {
     await joinRoom();
-    updateUI();
   } catch (error) {
     console.error(error);
+    logMessage(`Join room error: ${error.message}`);
     alert(error.message);
   }
 });
@@ -392,13 +434,16 @@ joinRoomBtn.addEventListener("click", async () => {
 refreshRoomBtn.addEventListener("click", async () => {
   try {
     const code = currentRoom?.code || roomCodeInput.value.trim().toUpperCase();
+
     if (!code) {
       alert("No room code available.");
       return;
     }
+
     await loadRoomState(code);
   } catch (error) {
     console.error(error);
+    logMessage(`Refresh room error: ${error.message}`);
     alert(error.message);
   }
 });
