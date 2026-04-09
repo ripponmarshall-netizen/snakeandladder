@@ -238,24 +238,24 @@ function resetGame() {
   updateUI();
 }
 
-async function boot() {
+async function connectSupabase() {
   try {
-    validateBoardSet();
-
     const session = await ensureSignedIn();
     const user = await getCurrentUser();
 
     authStatusEl.textContent = `Signed in anonymously: ${user?.id?.slice(0, 8) ?? "unknown"}…`;
     logMessage(`Supabase session ready: ${session?.user?.id?.slice(0, 8) ?? "unknown"}…`);
-
-    resetGame();
   } catch (error) {
-    console.error(error);
-    authStatusEl.textContent = "Supabase connection failed.";
-    statusEl.textContent = "Check your Supabase URL, anon key, and Anonymous Auth settings.";
-    rollBtn.disabled = true;
-    resetBtn.disabled = true;
+    console.error("Supabase auth failed:", error);
+    authStatusEl.textContent = "Supabase offline — playing locally.";
+    logMessage("Supabase connection failed. Game is fully playable offline.");
   }
+}
+
+function boot() {
+  validateBoardSet();
+  resetGame();
+  connectSupabase();
 }
 
 rollBtn.addEventListener("click", takeTurn);
