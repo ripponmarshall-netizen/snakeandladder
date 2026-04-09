@@ -1,15 +1,27 @@
 import { boards } from "./boards.js";
-import { ensureSignedIn, getCurrentUser } from "./supabase.js";
+import { supabase, ensureSignedIn, getCurrentUser } from "./supabase.js";
 
 const boardEl = document.getElementById("board");
 const authStatusEl = document.getElementById("authStatus");
+const roomStatusEl = document.getElementById("roomStatus");
 const statusEl = document.getElementById("status");
 const boardNameEl = document.getElementById("boardName");
 const lastRollEl = document.getElementById("lastRoll");
 const positionsEl = document.getElementById("positions");
+const roomCodeDisplayEl = document.getElementById("roomCodeDisplay");
+const roleDisplayEl = document.getElementById("roleDisplay");
+const playersDisplayEl = document.getElementById("playersDisplay");
+const playerNameInput = document.getElementById("playerName");
+const roomCodeInput = document.getElementById("roomCodeInput");
+const createRoomBtn = document.getElementById("createRoomBtn");
+const joinRoomBtn = document.getElementById("joinRoomBtn");
+const refreshRoomBtn = document.getElementById("refreshRoomBtn");
 const logEl = document.getElementById("log");
-const rollBtn = document.getElementById("rollBtn");
-const resetBtn = document.getElementById("resetBtn");
+
+let currentUser = null;
+let currentRoom = null;
+let currentMembership = null;
+let currentGame = null;
 
 function getCellNumber(rowFromTop, col) {
   const rowFromBottom = 9 - rowFromTop;
@@ -49,6 +61,13 @@ function validateBoardSet() {
   }
 }
 
+function logMessage(message) {
+  const entry = document.createElement("div");
+  entry.className = "log-entry";
+  entry.textContent = message;
+  logEl.prepend(entry);
+}
+
 function cryptoRandomInt(min, max) {
   const range = max - min + 1;
   const maxUint32 = 0x100000000;
@@ -64,66 +83,32 @@ function cryptoRandomInt(min, max) {
   return min + (value % range);
 }
 
-function rollDie() {
-  return cryptoRandomInt(1, 6);
-}
-
 function randomBoard() {
   return boards[cryptoRandomInt(0, boards.length - 1)];
 }
 
-function createGame() {
-  return {
-    currentPlayer: 0,
-    players: [
-      { name: "Black", color: "black", position: 0 },
-      { name: "White", color: "white", position: 0 }
-    ],
-    lastRoll: null,
-    winner: null,
-    turnCount: 1,
-    board: randomBoard()
-  };
+function generateRoomCode(length = 6) {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "";
+
+  for (let i = 0; i < length; i += 1) {
+    code += chars[cryptoRandomInt(0, chars.length - 1)];
+  }
+
+  return code;
 }
 
-let game = createGame();
-
-function logMessage(message) {
-  const entry = document.createElement("div");
-  entry.className = "log-entry";
-  entry.textContent = message;
-  logEl.prepend(entry);
-}
-
-function renderStartTokens() {
-  const stats = document.querySelector(".stats");
-  let dock = document.getElementById("startDock");
-  const zeroPlayers = game.players.filter(player => player.position === 0);
-
-  if (dock) dock.remove();
-  if (!zeroPlayers.length) return;
-
-  dock = document.createElement("div");
-  dock.id = "startDock";
-  dock.style.marginTop = "8px";
-  dock.style.display = "flex";
-  dock.style.alignItems = "center";
-  dock.style.gap = "8px";
-  dock.innerHTML = `<span style="font-size:0.9rem;color:#5e5e5e;">At start:</span>`;
-
-  zeroPlayers.forEach(player => {
-    const token = document.createElement("div");
-    token.className = `token ${player.color}`;
-    token.title = `${player.name} at start`;
-    dock.appendChild(token);
-  });
-
-  stats.appendChild(dock);
+function findBoardById(boardId) {
+  return boards.find(board => board.id === boardId) ?? boards[0];
 }
 
 function renderBoard() {
   boardEl.innerHTML = "";
-  const jumps = game.board.jumps;
+
+  const board = findBoardById(currentGame?.board_id ?? boards[0].id);
+  const jumps = board.jumps;
+  const player1Position = currentGame?.player1_position ?? 0;
+  const player2Position = currentGame?.player2_position ?? 0;
 
   for (let row = 0; row < 10; row++) {
     for (let col = 0; col < 10; col++) {
@@ -147,15 +132,17 @@ function renderBoard() {
         cell.appendChild(jumpEl);
       }
 
-      const playersHere = game.players.filter(player => player.position === number);
+      const playersHere = [];
+      if (player1Position === number) playersHere.push("black");
+      if (player2Position === number) playersHere.push("white");
+
       if (playersHere.length) {
         const tokensEl = document.createElement("div");
         tokensEl.className = "tokens";
 
-        playersHere.forEach(player => {
+        playersHere.forEach(color => {
           const token = document.createElement("div");
-          token.className = `token ${player.color}`;
-          token.title = `${player.name} on ${player.position}`;
+          token.className = `token ${color}`;
           tokensEl.appendChild(token);
         });
 
@@ -169,72 +156,198 @@ function renderBoard() {
 
 function updateUI() {
   renderBoard();
-  renderStartTokens();
 
-  boardNameEl.textContent = `Board: ${game.board.name}`;
-  positionsEl.textContent = `Black: ${game.players[0].position} | White: ${game.players[1].position}`;
-  lastRollEl.textContent = `Last roll: ${game.lastRoll ?? "-"}`;
+  boardNameEl.textContent = `Board: ${currentGame ? findBoardById(currentGame.board_id).name : "-"}`;
+  lastRollEl.textContent = `Last roll: ${currentGame?.last_roll ?? "-"}`;
+  positionsEl.textContent = `Black: ${currentGame?.player1_position ?? 0} | White: ${currentGame?.player2_position ?? 0}`;
+  roomCodeDisplayEl.textContent = `Room code: ${currentRoom?.code ?? "-"}`;
+  roleDisplayEl.textContent = `Role: ${currentMembership?.role ?? "-"}`;
 
-  if (game.winner) {
-    statusEl.textContent = `${game.winner.name} wins on turn ${game.turnCount}.`;
-    rollBtn.disabled = true;
+  if (currentRoom) {
+    roomStatusEl.textContent = `Joined room ${currentRoom.code}.`;
+  } else {
+    roomStatusEl.textContent = "No room joined.";
+  }
+
+  if (currentGame?.winner) {
+    statusEl.textContent = `${currentGame.winner} won the game.`;
+  } else if (currentGame) {
+    statusEl.textContent = `Current turn: ${currentGame.current_turn}`;
+  } else {
+    statusEl.textContent = "Game not started.";
+  }
+}
+
+async function createRoom() {
+  const playerName = playerNameInput.value.trim();
+  if (!playerName) {
+    alert("Enter a player name first.");
     return;
   }
 
-  statusEl.textContent = `${game.players[game.currentPlayer].name} to roll.`;
-  rollBtn.disabled = false;
+  let code = generateRoomCode();
+
+  for (let i = 0; i < 5; i += 1) {
+    const {  existing } = await supabase
+      .from("rooms")
+      .select("id")
+      .eq("code", code)
+      .maybeSingle();
+
+    if (!existing) break;
+    code = generateRoomCode();
+  }
+
+  const board = randomBoard();
+
+  const {  room, error: roomError } = await supabase
+    .from("rooms")
+    .insert({
+      code,
+      created_by: currentUser.id,
+      status: "waiting"
+    })
+    .select()
+    .single();
+
+  if (roomError) throw roomError;
+
+  const {  membership, error: membershipError } = await supabase
+    .from("room_players")
+    .insert({
+      room_id: room.id,
+      user_id: currentUser.id,
+      player_name: playerName,
+      role: "player1"
+    })
+    .select()
+    .single();
+
+  if (membershipError) throw membershipError;
+
+  const {  game, error: gameError } = await supabase
+    .from("games")
+    .insert({
+      room_id: room.id,
+      board_id: board.id,
+      current_turn: "player1",
+      player1_position: 0,
+      player2_position: 0
+    })
+    .select()
+    .single();
+
+  if (gameError) throw gameError;
+
+  currentRoom = room;
+  currentMembership = membership;
+  currentGame = game;
+
+  logMessage(`Created room ${room.code} as player1 on ${board.name}.`);
+  await loadRoomState(room.code);
 }
 
-function applyJump(position) {
-  return game.board.jumps[position] ?? position;
-}
+async function joinRoom() {
+  const playerName = playerNameInput.value.trim();
+  const code = roomCodeInput.value.trim().toUpperCase();
 
-function takeTurn() {
-  if (game.winner) return;
-
-  const player = game.players[game.currentPlayer];
-  const roll = rollDie();
-  const attempted = player.position + roll;
-
-  game.lastRoll = roll;
-
-  if (attempted > 100) {
-    logMessage(
-      `Turn ${game.turnCount}: ${player.name} rolled ${roll} from ${player.position} but needs an exact roll to reach 100, so stays put.`
-    );
-    game.currentPlayer = (game.currentPlayer + 1) % 2;
-    game.turnCount += 1;
-    updateUI();
+  if (!playerName) {
+    alert("Enter a player name first.");
     return;
   }
 
-  player.position = attempted;
-  logMessage(`Turn ${game.turnCount}: ${player.name} rolled ${roll} and moved to ${player.position}.`);
-
-  const jumpedTo = applyJump(player.position);
-  if (jumpedTo !== player.position) {
-    const isLadder = jumpedTo > player.position;
-    logMessage(
-      `${player.name} ${isLadder ? "climbed a ladder" : "hit a snake"} from ${player.position} to ${jumpedTo}.`
-    );
-    player.position = jumpedTo;
-  }
-
-  if (player.position === 100) {
-    game.winner = player;
-    updateUI();
+  if (!code) {
+    alert("Enter a room code.");
     return;
   }
 
-  game.currentPlayer = (game.currentPlayer + 1) % 2;
-  game.turnCount += 1;
-  updateUI();
+  const {  room, error: roomError } = await supabase
+    .from("rooms")
+    .select("*")
+    .eq("code", code)
+    .single();
+
+  if (roomError) throw roomError;
+
+  const {  existingPlayers, error: playersError } = await supabase
+    .from("room_players")
+    .select("*")
+    .eq("room_id", room.id);
+
+  if (playersError) throw playersError;
+
+  if (existingPlayers.length >= 2) {
+    alert("This room is already full.");
+    return;
+  }
+
+  const alreadyInRoom = existingPlayers.find(player => player.user_id === currentUser.id);
+  if (alreadyInRoom) {
+    currentRoom = room;
+    currentMembership = alreadyInRoom;
+    await loadRoomState(room.code);
+    return;
+  }
+
+  const {  membership, error: membershipError } = await supabase
+    .from("room_players")
+    .insert({
+      room_id: room.id,
+      user_id: currentUser.id,
+      player_name: playerName,
+      role: "player2"
+    })
+    .select()
+    .single();
+
+  if (membershipError) throw membershipError;
+
+  await supabase
+    .from("rooms")
+    .update({ status: "active" })
+    .eq("id", room.id);
+
+  currentRoom = room;
+  currentMembership = membership;
+
+  logMessage(`Joined room ${room.code} as player2.`);
+  await loadRoomState(room.code);
 }
 
-function resetGame() {
-  game = createGame();
-  logEl.innerHTML = "";
-  logMessage(`Game reset. New board: ${game.board.name}. Black starts. Both players begin at 0.`);
+async function loadRoomState(roomCode) {
+  const {  room, error: roomError } = await supabase
+    .from("rooms")
+    .select("*")
+    .eq("code", roomCode)
+    .single();
+
+  if (roomError) throw roomError;
+
+  const {  players, error: playersError } = await supabase
+    .from("room_players")
+    .select("*")
+    .eq("room_id", room.id);
+
+  if (playersError) throw playersError;
+
+  const {  game, error: gameError } = await supabase
+    .from("games")
+    .select("*")
+    .eq("room_id", room.id)
+    .single();
+
+  if (gameError) throw gameError;
+
+  currentRoom = room;
+  currentGame = game;
+  currentMembership = players.find(player => player.user_id === currentUser.id) ?? null;
+
+  const playerSummary = players
+    .map(player => `${player.role}: ${player.player_name}`)
+    .join(" | ");
+
+  playersDisplayEl.textContent = `Players: ${playerSummary || "-"}`;
+  logMessage(`Loaded room ${room.code}.`);
   updateUI();
 }
 
@@ -242,23 +355,52 @@ async function boot() {
   try {
     validateBoardSet();
 
-    const session = await ensureSignedIn();
-    const user = await getCurrentUser();
+    await ensureSignedIn();
+    currentUser = await getCurrentUser();
 
-    authStatusEl.textContent = `Signed in anonymously: ${user?.id?.slice(0, 8) ?? "unknown"}…`;
-    logMessage(`Supabase session ready: ${session?.user?.id?.slice(0, 8) ?? "unknown"}…`);
+    authStatusEl.textContent = `Signed in anonymously: ${currentUser.id.slice(0, 8)}…`;
+    logMessage(`Supabase session ready for user ${currentUser.id.slice(0, 8)}…`);
 
-    resetGame();
+    updateUI();
   } catch (error) {
     console.error(error);
     authStatusEl.textContent = "Supabase connection failed.";
     statusEl.textContent = "Check your Supabase URL, anon key, and Anonymous Auth settings.";
-    rollBtn.disabled = true;
-    resetBtn.disabled = true;
   }
 }
 
-rollBtn.addEventListener("click", takeTurn);
-resetBtn.addEventListener("click", resetGame);
+createRoomBtn.addEventListener("click", async () => {
+  try {
+    await createRoom();
+    updateUI();
+  } catch (error) {
+    console.error(error);
+    alert(error.message);
+  }
+});
+
+joinRoomBtn.addEventListener("click", async () => {
+  try {
+    await joinRoom();
+    updateUI();
+  } catch (error) {
+    console.error(error);
+    alert(error.message);
+  }
+});
+
+refreshRoomBtn.addEventListener("click", async () => {
+  try {
+    const code = currentRoom?.code || roomCodeInput.value.trim().toUpperCase();
+    if (!code) {
+      alert("No room code available.");
+      return;
+    }
+    await loadRoomState(code);
+  } catch (error) {
+    console.error(error);
+    alert(error.message);
+  }
+});
 
 boot();
