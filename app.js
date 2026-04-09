@@ -231,7 +231,7 @@ async function createRoom() {
   const code = await createUniqueRoomCode();
   const board = randomBoard();
 
-  const { data: room, error: roomError } = await supabase
+  const {  room, error: roomError } = await supabase
     .from("rooms")
     .insert({
       code,
@@ -249,7 +249,7 @@ async function createRoom() {
     throw new Error("Room creation returned no room.");
   }
 
-  const { data: membership, error: membershipError } = await supabase
+  const {  membership, error: membershipError } = await supabase
     .from("room_players")
     .insert({
       room_id: room.id,
@@ -264,11 +264,7 @@ async function createRoom() {
     throw new Error(`Room membership creation failed: ${membershipError.message}`);
   }
 
-  if (!membership) {
-    throw new Error("Room membership creation returned no membership.");
-  }
-
-  const { data: game, error: gameError } = await supabase
+  const {  game, error: gameError } = await supabase
     .from("games")
     .insert({
       room_id: room.id,
@@ -282,10 +278,6 @@ async function createRoom() {
 
   if (gameError) {
     throw new Error(`Game creation failed: ${gameError.message}`);
-  }
-
-  if (!game) {
-    throw new Error("Game creation returned no game.");
   }
 
   currentRoom = room;
@@ -311,80 +303,41 @@ async function joinRoom() {
     return;
   }
 
-  if (!currentUser?.id) {
-    throw new Error("No authenticated user found.");
+  const { data, error } = await supabase.rpc("join_room_by_code", {
+    room_code: code,
+    player_name_input: playerName
+  });
+
+  if (error) {
+    throw new Error(`Could not join room: ${error.message}`);
   }
 
-  const { data: room, error: roomError } = await supabase
-    .from("rooms")
-    .select("*")
-    .eq("code", code)
-    .maybeSingle();
+  const result = Array.isArray(data) ? data[0] : data;
 
-  if (roomError) {
-    throw new Error(`Room lookup failed: ${roomError.message}`);
+  if (!result?.room_id) {
+    throw new Error("Join room returned no room data.");
   }
 
-  if (!room) {
-    throw new Error("Room not found for that code.");
-  }
+  currentRoom = {
+    id: result.room_id,
+    code: result.room_code_out,
+    status: result.room_status
+  };
 
-  const { data: players, error: playersError } = await supabase
-    .from("room_players")
-    .select("*")
-    .eq("room_id", room.id);
+  currentMembership = {
+    id: result.membership_id,
+    role: result.assigned_role,
+    player_name: playerName,
+    user_id: currentUser?.id,
+    room_id: result.room_id
+  };
 
-  if (playersError) {
-    throw new Error(`Could not load room players: ${playersError.message}`);
-  }
-
-  const safePlayers = Array.isArray(players) ? players : [];
-
-  const alreadyInRoom = safePlayers.find(player => player.user_id === currentUser.id);
-  if (alreadyInRoom) {
-    currentRoom = room;
-    currentMembership = alreadyInRoom;
-    currentPlayers = safePlayers;
-    await loadRoomState(code);
-    return;
-  }
-
-  if (safePlayers.length >= 2) {
-    throw new Error("This room is already full.");
-  }
-
-  const takenRoles = new Set(safePlayers.map(player => player.role));
-  const role = takenRoles.has("player1") ? "player2" : "player1";
-
-  const { data: membership, error: membershipError } = await supabase
-    .from("room_players")
-    .insert({
-      room_id: room.id,
-      user_id: currentUser.id,
-      player_name: playerName,
-      role
-    })
-    .select()
-    .single();
-
-  if (membershipError) {
-    throw new Error(`Could not join room: ${membershipError.message}`);
-  }
-
-  if (!membership) {
-    throw new Error("Join room returned no membership.");
-  }
-
-  currentRoom = room;
-  currentMembership = membership;
-  currentPlayers = [...safePlayers, membership];
-
-  logMessage(`Joined room ${room.code} as ${role}.`);
-  await loadRoomState(code);
+  logMessage(`Joined room ${result.room_code_out} as ${result.assigned_role}.`);
+  await loadRoomState(result.room_code_out);
 }
 
 async function loadRoomState(roomCode) {
-  const { data: room, error: roomError } = await supabase
+  const {  room, error: roomError } = await supabase
     .from("rooms")
     .select("*")
     .eq("code", roomCode)
@@ -398,7 +351,7 @@ async function loadRoomState(roomCode) {
     throw new Error("Room not found.");
   }
 
-  const { data: game, error: gameError } = await supabase
+  const {  game, error: gameError } = await supabase
     .from("games")
     .select("*")
     .eq("room_id", room.id)
@@ -408,7 +361,7 @@ async function loadRoomState(roomCode) {
     throw new Error(`Game load failed: ${gameError.message}`);
   }
 
-  const { data: players, error: playersError } = await supabase
+  const {  players, error: playersError } = await supabase
     .from("room_players")
     .select("*")
     .eq("room_id", room.id);
@@ -422,7 +375,7 @@ async function loadRoomState(roomCode) {
   currentRoom = room;
   currentGame = game ?? null;
   currentPlayers = safePlayers;
-  currentMembership = safePlayers.find(player => player.user_id === currentUser.id) ?? null;
+  currentMembership = safePlayers.find(player => player.user_id === currentUser.id) ?? currentMembership;
 
   logMessage(`Loaded room ${room.code}.`);
   updateUI();
