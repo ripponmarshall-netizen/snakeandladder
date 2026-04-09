@@ -474,25 +474,54 @@ async function rollDice() {
     return;
   }
 
-  if (currentGame.winner) {
-    alert("Game is already over.");
-    return;
-  }
-
-  if (currentPlayers.length < 2) {
-    alert("Waiting for player 2 to join.");
-    return;
-  }
-
-  if (currentMembership.role !== currentGame.current_turn) {
-    alert("It's not your turn.");
-    return;
-  }
-
   if (rollDiceBtn) rollDiceBtn.disabled = true;
   setButtonsDisabled(true);
 
   try {
+    /* ── Re-fetch latest game state before rolling ── */
+    const { data: freshGame, error: gameRefetchError } = await supabase
+      .from("games")
+      .select("*")
+      .eq("id", currentGame.id)
+      .maybeSingle();
+
+    if (gameRefetchError) {
+      throw new Error("Could not verify game state: " + gameRefetchError.message);
+    }
+
+    if (!freshGame) {
+      throw new Error("Game no longer exists. Try refreshing the room.");
+    }
+
+    currentGame = freshGame;
+
+    /* Re-fetch players to ensure accurate count */
+    const { data: freshPlayers, error: playersRefetchError } = await supabase
+      .from("room_players")
+      .select("*")
+      .eq("room_id", currentRoom.id);
+
+    if (!playersRefetchError && Array.isArray(freshPlayers)) {
+      currentPlayers = freshPlayers;
+    }
+
+    /* ── Re-validate against fresh data ── */
+    if (currentGame.winner) {
+      logMessage("Game is already over.");
+      return;
+    }
+
+    if (currentPlayers.length < 2) {
+      logMessage("Waiting for player 2 to join.");
+      return;
+    }
+
+    if (currentMembership.role !== currentGame.current_turn) {
+      logMessage("Not your turn. Current turn: " + currentGame.current_turn);
+      return;
+    }
+
+    /* ── Compute roll ── */
     const roll = cryptoRandomInt(1, 6);
     const board = findBoardById(currentGame.board_id);
     const posKey =
