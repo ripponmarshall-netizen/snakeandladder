@@ -16,6 +16,7 @@ const roomCodeInput = document.getElementById("roomCodeInput");
 const createRoomBtn = document.getElementById("createRoomBtn");
 const joinRoomBtn = document.getElementById("joinRoomBtn");
 const refreshRoomBtn = document.getElementById("refreshRoomBtn");
+const rollDiceBtn = document.getElementById("rollDiceBtn");
 const logEl = document.getElementById("log");
 
 let currentUser = null;
@@ -23,6 +24,9 @@ let currentRoom = null;
 let currentMembership = null;
 let currentGame = null;
 let currentPlayers = [];
+let realtimeChannel = null;
+
+/* ── Board helpers ── */
 
 function getCellNumber(rowFromTop, col) {
   const rowFromBottom = 9 - rowFromTop;
@@ -61,6 +65,8 @@ function validateBoardSet() {
     }
   }
 }
+
+/* ── Utilities ── */
 
 function logMessage(message) {
   const entry = document.createElement("div");
@@ -103,6 +109,15 @@ function findBoardById(boardId) {
   return boards.find(board => board.id === boardId) ?? boards[0];
 }
 
+function setButtonsDisabled(disabled) {
+  createRoomBtn.disabled = disabled;
+  joinRoomBtn.disabled = disabled;
+  refreshRoomBtn.disabled = disabled;
+  if (rollDiceBtn) rollDiceBtn.disabled = disabled;
+}
+
+/* ── Rendering ── */
+
 function renderBoard() {
   boardEl.innerHTML = "";
 
@@ -129,7 +144,7 @@ function renderBoard() {
       if (jumps[number]) {
         const jumpEl = document.createElement("div");
         jumpEl.className = "jump-label";
-        jumpEl.textContent = jumps[number] > number ? `L→${jumps[number]}` : `S→${jumps[number]}`;
+        jumpEl.textContent = jumps[number] > number ? "L\u2192" + jumps[number] : "S\u2192" + jumps[number];
         cell.appendChild(jumpEl);
       }
 
@@ -143,7 +158,7 @@ function renderBoard() {
 
         playersHere.forEach(color => {
           const token = document.createElement("div");
-          token.className = `token ${color}`;
+          token.className = "token " + color;
           tokensEl.appendChild(token);
         });
 
@@ -162,37 +177,53 @@ function updatePlayersDisplay() {
   }
 
   const summary = currentPlayers
-    .map(player => `${player.role}: ${player.player_name}`)
+    .map(player => player.role + ": " + player.player_name)
     .join(" | ");
 
-  playersDisplayEl.textContent = `Players: ${summary}`;
+  playersDisplayEl.textContent = "Players: " + summary;
 }
 
 function updateUI() {
   renderBoard();
 
-  boardNameEl.textContent = `Board: ${currentGame ? findBoardById(currentGame.board_id).name : "-"}`;
-  lastRollEl.textContent = `Last roll: ${currentGame?.last_roll ?? "-"}`;
-  positionsEl.textContent = `Black: ${currentGame?.player1_position ?? 0} | White: ${currentGame?.player2_position ?? 0}`;
-  roomCodeDisplayEl.textContent = `Room code: ${currentRoom?.code ?? "-"}`;
-  roleDisplayEl.textContent = `Role: ${currentMembership?.role ?? "-"}`;
+  boardNameEl.textContent = "Board: " + (currentGame ? findBoardById(currentGame.board_id).name : "-");
+  lastRollEl.textContent = "Last roll: " + (currentGame?.last_roll ?? "-");
+  positionsEl.textContent = "Black: " + (currentGame?.player1_position ?? 0) + " | White: " + (currentGame?.player2_position ?? 0);
+  roomCodeDisplayEl.textContent = "Room code: " + (currentRoom?.code ?? "-");
+  roleDisplayEl.textContent = "Role: " + (currentMembership?.role ?? "-");
 
   if (currentRoom) {
-    roomStatusEl.textContent = `Joined room ${currentRoom.code}.`;
+    roomStatusEl.textContent = "Joined room " + currentRoom.code + ".";
   } else {
     roomStatusEl.textContent = "No room joined.";
   }
 
   if (currentGame?.winner) {
-    statusEl.textContent = `${currentGame.winner} won the game.`;
+    const winnerPlayer = currentPlayers.find(function(p) { return p.role === currentGame.winner; });
+    statusEl.textContent = (winnerPlayer?.player_name ?? currentGame.winner) + " won the game!";
+  } else if (currentGame && currentPlayers.length < 2) {
+    statusEl.textContent = "Waiting for player 2 to join\u2026";
   } else if (currentGame) {
-    statusEl.textContent = `Current turn: ${currentGame.current_turn}`;
+    statusEl.textContent = "Current turn: " + currentGame.current_turn;
   } else {
     statusEl.textContent = "Game not started.";
   }
 
+  /* Enable roll only when it is this player's turn, both present, no winner */
+  if (rollDiceBtn) {
+    var canRoll =
+      currentGame &&
+      !currentGame.winner &&
+      currentPlayers.length === 2 &&
+      currentMembership?.role === currentGame.current_turn;
+
+    rollDiceBtn.disabled = !canRoll;
+  }
+
   updatePlayersDisplay();
 }
+
+/* ── Room creation ── */
 
 async function createUniqueRoomCode() {
   for (let i = 0; i < 10; i += 1) {
@@ -205,7 +236,7 @@ async function createUniqueRoomCode() {
       .maybeSingle();
 
     if (error) {
-      throw new Error(`Room code check failed: ${error.message}`);
+      throw new Error("Room code check failed: " + error.message);
     }
 
     if (!data) {
@@ -228,73 +259,87 @@ async function createRoom() {
     throw new Error("No authenticated user found.");
   }
 
-  const code = await createUniqueRoomCode();
-  const board = randomBoard();
-  const roomId = crypto.randomUUID();
-  const membershipId = crypto.randomUUID();
+  setButtonsDisabled(true);
 
-  const roomPayload = {
-    id: roomId,
-    code,
-    created_by: currentUser.id,
-    status: "waiting"
-  };
+  try {
+    const code = await createUniqueRoomCode();
+    const board = randomBoard();
+    const roomId = crypto.randomUUID();
+    const membershipId = crypto.randomUUID();
 
-  const membershipPayload = {
-    id: membershipId,
-    room_id: roomId,
-    user_id: currentUser.id,
-    player_name: playerName,
-    role: "player1"
-  };
+    const roomPayload = {
+      id: roomId,
+      code: code,
+      created_by: currentUser.id,
+      status: "waiting"
+    };
 
-  const { error: roomError } = await supabase
-    .from("rooms")
-    .insert(roomPayload);
-
-  if (roomError) {
-    throw new Error(`Room creation failed: ${roomError.message}`);
-  }
-
-  const { error: membershipError } = await supabase
-    .from("room_players")
-    .insert(membershipPayload);
-
-  if (membershipError) {
-    throw new Error(`Room membership creation failed: ${membershipError.message}`);
-  }
-
-  const { data: game, error: gameError } = await supabase
-    .from("games")
-    .insert({
+    const membershipPayload = {
+      id: membershipId,
       room_id: roomId,
-      board_id: board.id,
-      current_turn: "player1",
-      player1_position: 0,
-      player2_position: 0
-    })
-    .select()
-    .single();
+      user_id: currentUser.id,
+      player_name: playerName,
+      role: "player1"
+    };
 
-  if (gameError) {
-    throw new Error(`Game creation failed: ${gameError.message}`);
+    /* 1. Insert room */
+    const { error: roomError } = await supabase
+      .from("rooms")
+      .insert(roomPayload);
+
+    if (roomError) {
+      throw new Error("Room creation failed: " + roomError.message);
+    }
+
+    /* 2. Insert membership (rollback room on failure) */
+    const { error: membershipError } = await supabase
+      .from("room_players")
+      .insert(membershipPayload);
+
+    if (membershipError) {
+      await supabase.from("rooms").delete().eq("id", roomId);
+      throw new Error("Membership creation failed: " + membershipError.message);
+    }
+
+    /* 3. Insert game (rollback room + membership on failure) */
+    const { data: game, error: gameError } = await supabase
+      .from("games")
+      .insert({
+        room_id: roomId,
+        board_id: board.id,
+        current_turn: "player1",
+        player1_position: 0,
+        player2_position: 0
+      })
+      .select()
+      .single();
+
+    if (gameError) {
+      await supabase.from("room_players").delete().eq("id", membershipId);
+      await supabase.from("rooms").delete().eq("id", roomId);
+      throw new Error("Game creation failed: " + gameError.message);
+    }
+
+    if (!game) {
+      throw new Error("Game creation returned no data.");
+    }
+
+    currentRoom = roomPayload;
+    currentMembership = Object.assign({}, membershipPayload, {
+      joined_at: new Date().toISOString()
+    });
+    currentGame = game;
+    currentPlayers = [currentMembership];
+
+    logMessage("Created room " + code + " as player1 on " + board.name + ".");
+    subscribeToRoom(roomId);
+    updateUI();
+  } finally {
+    setButtonsDisabled(false);
   }
-
-  if (!game) {
-    throw new Error("Game creation returned no game.");
-  }
-
-  currentRoom = roomPayload;
-  currentMembership = {
-    ...membershipPayload,
-    joined_at: new Date().toISOString()
-  };
-  currentGame = game;
-  currentPlayers = [currentMembership];
-
-  logMessage(`Created room ${code} as player1 on ${board.name}.`);
-  updateUI();
 }
+
+/* ── Join room (client-side, no RPC needed) ── */
 
 async function joinRoom() {
   const playerName = playerNameInput.value.trim();
@@ -310,38 +355,265 @@ async function joinRoom() {
     return;
   }
 
-  const { data, error } = await supabase.rpc("join_room_by_code", {
-    room_code: code,
-    player_name_input: playerName
-  });
-
-  if (error) {
-    throw new Error(`Could not join room: ${error.message}`);
+  if (!currentUser?.id) {
+    throw new Error("No authenticated user found.");
   }
 
-  const result = Array.isArray(data) ? data[0] : data;
+  setButtonsDisabled(true);
 
-  if (!result?.room_id) {
-    throw new Error("Join room returned no room data.");
+  try {
+    /* Find room */
+    const { data: room, error: roomError } = await supabase
+      .from("rooms")
+      .select("*")
+      .eq("code", code)
+      .maybeSingle();
+
+    if (roomError) {
+      throw new Error("Room lookup failed: " + roomError.message);
+    }
+
+    if (!room) {
+      throw new Error("No room found with code " + code + ".");
+    }
+
+    if (room.status !== "waiting") {
+      throw new Error("This room is no longer accepting players.");
+    }
+
+    /* Check existing players */
+    const { data: players, error: playersError } = await supabase
+      .from("room_players")
+      .select("*")
+      .eq("room_id", room.id);
+
+    if (playersError) {
+      throw new Error("Players lookup failed: " + playersError.message);
+    }
+
+    const safePlayers = Array.isArray(players) ? players : [];
+
+    /* Already in this room? Rejoin. */
+    const existing = safePlayers.find(function(p) { return p.user_id === currentUser.id; });
+    if (existing) {
+      currentRoom = room;
+      currentMembership = existing;
+      currentPlayers = safePlayers;
+      logMessage("Rejoined room " + code + " as " + existing.role + ".");
+      subscribeToRoom(room.id);
+      updateUI();
+      return;
+    }
+
+    if (safePlayers.length >= 2) {
+      throw new Error("Room is full.");
+    }
+
+    /* Determine role */
+    const takenRoles = safePlayers.map(function(p) { return p.role; });
+    const role = takenRoles.includes("player1") ? "player2" : "player1";
+
+    /* Insert membership */
+    const membershipId = crypto.randomUUID();
+    const { error: membershipError } = await supabase
+      .from("room_players")
+      .insert({
+        id: membershipId,
+        room_id: room.id,
+        user_id: currentUser.id,
+        player_name: playerName,
+        role: role
+      });
+
+    if (membershipError) {
+      throw new Error("Could not join room: " + membershipError.message);
+    }
+
+    /* Mark room as playing now that both players are in */
+    if (safePlayers.length === 1) {
+      await supabase
+        .from("rooms")
+        .update({ status: "playing" })
+        .eq("id", room.id);
+    }
+
+    currentRoom = room;
+    currentMembership = {
+      id: membershipId,
+      room_id: room.id,
+      user_id: currentUser.id,
+      player_name: playerName,
+      role: role
+    };
+
+    logMessage("Joined room " + code + " as " + role + ".");
+    await loadRoomState(code);
+  } finally {
+    setButtonsDisabled(false);
   }
-
-  currentRoom = {
-    id: result.room_id,
-    code: result.room_code_out,
-    status: result.room_status
-  };
-
-  currentMembership = {
-    id: result.membership_id,
-    role: result.assigned_role,
-    player_name: playerName,
-    user_id: currentUser?.id,
-    room_id: result.room_id
-  };
-
-  logMessage(`Joined room ${result.room_code_out} as ${result.assigned_role}.`);
-  await loadRoomState(result.room_code_out);
 }
+
+/* ── Dice roll ── */
+
+async function rollDice() {
+  if (!currentGame || !currentMembership || !currentRoom) {
+    alert("Join a room first.");
+    return;
+  }
+
+  if (currentGame.winner) {
+    alert("Game is already over.");
+    return;
+  }
+
+  if (currentPlayers.length < 2) {
+    alert("Waiting for player 2 to join.");
+    return;
+  }
+
+  if (currentMembership.role !== currentGame.current_turn) {
+    alert("It's not your turn.");
+    return;
+  }
+
+  setButtonsDisabled(true);
+
+  try {
+    const roll = cryptoRandomInt(1, 6);
+    const board = findBoardById(currentGame.board_id);
+    const posKey =
+      currentMembership.role === "player1"
+        ? "player1_position"
+        : "player2_position";
+
+    const currentPos = currentGame[posKey] ?? 0;
+    let newPos = currentPos + roll;
+    const nextTurn =
+      currentGame.current_turn === "player1" ? "player2" : "player1";
+
+    /* Must land exactly on 100 */
+    if (newPos > 100) {
+      logMessage(
+        "Rolled " + roll + " but need exactly " + (100 - currentPos) + " to win. Stay at " + currentPos + "."
+      );
+
+      const { error } = await supabase
+        .from("games")
+        .update({ last_roll: roll, current_turn: nextTurn })
+        .eq("id", currentGame.id);
+
+      if (error) throw new Error("Update failed: " + error.message);
+
+      currentGame.last_roll = roll;
+      currentGame.current_turn = nextTurn;
+      updateUI();
+      return;
+    }
+
+    /* Check for snake or ladder */
+    const jumpTarget = board.jumps[newPos];
+
+    if (jumpTarget) {
+      const jumpType = jumpTarget > newPos ? "Ladder" : "Snake";
+      logMessage(
+        "Rolled " + roll + ". Moved to " + newPos + ", hit a " + jumpType + "! Go to " + jumpTarget + "."
+      );
+      newPos = jumpTarget;
+    } else {
+      logMessage("Rolled " + roll + ". Moved from " + currentPos + " to " + newPos + ".");
+    }
+
+    /* Build update */
+    const winner = newPos === 100 ? currentMembership.role : null;
+    const updatePayload = {
+      [posKey]: newPos,
+      last_roll: roll,
+      current_turn: winner ? currentGame.current_turn : nextTurn
+    };
+
+    if (winner) {
+      updatePayload.winner = winner;
+    }
+
+    const { error } = await supabase
+      .from("games")
+      .update(updatePayload)
+      .eq("id", currentGame.id);
+
+    if (error) throw new Error("Update failed: " + error.message);
+
+    /* Optimistic local state (realtime will confirm) */
+    currentGame[posKey] = newPos;
+    currentGame.last_roll = roll;
+    currentGame.current_turn = updatePayload.current_turn;
+
+    if (winner) {
+      currentGame.winner = winner;
+      const winnerPlayer = currentPlayers.find(function(p) { return p.role === winner; });
+      logMessage((winnerPlayer?.player_name ?? winner) + " wins the game!");
+    }
+
+    updateUI();
+  } finally {
+    setButtonsDisabled(false);
+  }
+}
+
+/* ── Realtime subscriptions ── */
+
+function subscribeToRoom(roomId) {
+  if (realtimeChannel) {
+    supabase.removeChannel(realtimeChannel);
+    realtimeChannel = null;
+  }
+
+  realtimeChannel = supabase
+    .channel("room-" + roomId)
+    .on(
+      "postgres_changes",
+      {
+        event: "*",
+        schema: "public",
+        table: "games",
+        filter: "room_id=eq." + roomId
+      },
+      function(payload) {
+        if (payload.new) {
+          currentGame = payload.new;
+          logMessage("Game state updated.");
+          updateUI();
+        }
+      }
+    )
+    .on(
+      "postgres_changes",
+      {
+        event: "INSERT",
+        schema: "public",
+        table: "room_players",
+        filter: "room_id=eq." + roomId
+      },
+      function(payload) {
+        if (payload.new) {
+          var exists = currentPlayers.find(function(p) { return p.id === payload.new.id; });
+          if (!exists) {
+            currentPlayers.push(payload.new);
+            logMessage(
+              payload.new.player_name + " joined as " + payload.new.role + "."
+            );
+            updateUI();
+          }
+        }
+      }
+    )
+    .subscribe(function(status) {
+      if (status === "SUBSCRIBED") {
+        logMessage("Realtime connected.");
+      }
+    });
+}
+
+/* ── Load room state ── */
 
 async function loadRoomState(roomCode) {
   const { data: room, error: roomError } = await supabase
@@ -351,7 +623,7 @@ async function loadRoomState(roomCode) {
     .maybeSingle();
 
   if (roomError) {
-    throw new Error(`Room load failed: ${roomError.message}`);
+    throw new Error("Room load failed: " + roomError.message);
   }
 
   if (!room) {
@@ -365,7 +637,7 @@ async function loadRoomState(roomCode) {
     .maybeSingle();
 
   if (gameError) {
-    throw new Error(`Game load failed: ${gameError.message}`);
+    throw new Error("Game load failed: " + gameError.message);
   }
 
   const { data: players, error: playersError } = await supabase
@@ -374,7 +646,7 @@ async function loadRoomState(roomCode) {
     .eq("room_id", room.id);
 
   if (playersError) {
-    throw new Error(`Players load failed: ${playersError.message}`);
+    throw new Error("Players load failed: " + playersError.message);
   }
 
   const safePlayers = Array.isArray(players) ? players : [];
@@ -382,11 +654,16 @@ async function loadRoomState(roomCode) {
   currentRoom = room;
   currentGame = game ?? null;
   currentPlayers = safePlayers;
-  currentMembership = safePlayers.find(player => player.user_id === currentUser.id) ?? currentMembership;
+  currentMembership =
+    safePlayers.find(function(player) { return player.user_id === currentUser.id; }) ??
+    currentMembership;
 
-  logMessage(`Loaded room ${room.code}.`);
+  subscribeToRoom(room.id);
+  logMessage("Loaded room " + room.code + ".");
   updateUI();
 }
+
+/* ── Boot ── */
 
 async function boot() {
   try {
@@ -399,24 +676,27 @@ async function boot() {
       throw new Error("Anonymous sign-in succeeded but no user was returned.");
     }
 
-    authStatusEl.textContent = `Signed in anonymously: ${currentUser.id.slice(0, 8)}…`;
-    logMessage(`Supabase session ready for user ${currentUser.id.slice(0, 8)}…`);
+    authStatusEl.textContent = "Signed in anonymously: " + currentUser.id.slice(0, 8) + "\u2026";
+    logMessage("Supabase session ready for user " + currentUser.id.slice(0, 8) + "\u2026");
 
     updateUI();
   } catch (error) {
     console.error(error);
     authStatusEl.textContent = "Supabase connection failed.";
-    statusEl.textContent = "Check your Supabase URL, anon key, and Anonymous Auth settings.";
-    logMessage(`Boot error: ${error.message}`);
+    statusEl.textContent =
+      "Check your Supabase URL, anon key, and Anonymous Auth settings.";
+    logMessage("Boot error: " + error.message);
   }
 }
+
+/* ── Event listeners ── */
 
 createRoomBtn.addEventListener("click", async () => {
   try {
     await createRoom();
   } catch (error) {
     console.error(error);
-    logMessage(`Create room error: ${error.message}`);
+    logMessage("Create room error: " + error.message);
     alert(error.message);
   }
 });
@@ -426,7 +706,7 @@ joinRoomBtn.addEventListener("click", async () => {
     await joinRoom();
   } catch (error) {
     console.error(error);
-    logMessage(`Join room error: ${error.message}`);
+    logMessage("Join room error: " + error.message);
     alert(error.message);
   }
 });
@@ -443,7 +723,17 @@ refreshRoomBtn.addEventListener("click", async () => {
     await loadRoomState(code);
   } catch (error) {
     console.error(error);
-    logMessage(`Refresh room error: ${error.message}`);
+    logMessage("Refresh room error: " + error.message);
+    alert(error.message);
+  }
+});
+
+rollDiceBtn.addEventListener("click", async () => {
+  try {
+    await rollDice();
+  } catch (error) {
+    console.error(error);
+    logMessage("Roll dice error: " + error.message);
     alert(error.message);
   }
 });

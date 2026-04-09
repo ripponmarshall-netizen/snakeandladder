@@ -10,10 +10,10 @@
   <main class="app">
     <section class="panel">
       <h1>Snakes and Ladders</h1>
-      <p class="sub">Phase 4 · create room · join room · waiting room · Supabase-backed</p>
+      <p class="sub">Phase 5 \u00b7 multiplayer \u00b7 realtime \u00b7 dice roll</p>
 
       <div class="stats">
-        <p id="authStatus">Connecting to Supabase…</p>
+        <p id="authStatus">Connecting to Supabase\u2026</p>
         <p id="roomStatus">No room joined.</p>
         <p id="status">Game not started.</p>
         <p id="boardName">Board: -</p>
@@ -36,6 +36,13 @@
         <div class="actions">
           <button id="joinRoomBtn" class="button-secondary">Join Room</button>
           <button id="refreshRoomBtn" class="button-secondary">Refresh Room</button>
+        </div>
+      </section>
+
+      <section class="game-controls">
+        <h2>Game</h2>
+        <div class="actions">
+          <button id="rollDiceBtn" disabled>Roll Dice</button>
         </div>
       </section>
 
