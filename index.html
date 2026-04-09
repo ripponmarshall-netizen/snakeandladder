@@ -2,67 +2,93 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Monochrome Snakes and Ladders</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Snakes &amp; Ladders</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <main class="app">
-    <section class="panel">
-      <h1>Snakes and Ladders</h1>
-      <p class="sub">Phase 5 \u00b7 multiplayer \u00b7 realtime \u00b7 dice roll</p>
 
-      <div class="stats">
-        <p id="authStatus">Connecting to Supabase\u2026</p>
-        <p id="roomStatus">No room joined.</p>
-        <p id="status">Game not started.</p>
-        <p id="boardName">Board: -</p>
-        <p id="lastRoll">Last roll: -</p>
-        <p id="positions">Black: 0 | White: 0</p>
+  <!-- LOBBY -->
+  <div id="lobby" class="lobby">
+    <div class="lobby-inner">
+      <h1 class="lobby-title">Snakes<br>&amp; Ladders</h1>
+      <p class="lobby-sub" id="authStatus">Connecting to Supabase&hellip;</p>
+      <div class="lobby-card">
+        <label for="playerName">Your name</label>
+        <input id="playerName" type="text" maxlength="20" placeholder="Enter name" autocomplete="off" />
+        <button id="createRoomBtn" class="btn btn-primary btn-block">Create Room</button>
+        <div class="divider"><span>or join</span></div>
+        <label for="roomCodeInput">Room code</label>
+        <input id="roomCodeInput" type="text" maxlength="6" placeholder="ABC123" autocomplete="off" />
+        <button id="joinRoomBtn" class="btn btn-outline btn-block">Join Room</button>
       </div>
+    </div>
+  </div>
 
-      <section class="room-controls">
-        <h2>Room</h2>
-        <label for="playerName">Player name</label>
-        <input id="playerName" type="text" maxlength="20" placeholder="Enter your name" />
+  <!-- GAME -->
+  <div id="gameScreen" class="game-screen hidden">
+    <header class="room-bar">
+      <span class="room-tag">ROOM</span>
+      <span id="roomCodeDisplay" class="room-code">------</span>
+      <button id="copyCodeBtn" class="bar-btn">Copy</button>
+      <button id="refreshRoomBtn" class="bar-btn">Refresh</button>
+    </header>
 
-        <div class="actions">
-          <button id="createRoomBtn">Create Room</button>
+    <div class="player-strip">
+      <div id="p1Card" class="p-card">
+        <div class="p-dot black"></div>
+        <div class="p-info">
+          <span class="p-name" id="p1Name">Player 1</span>
+          <span class="p-pos" id="p1Pos">Start</span>
         </div>
-
-        <label for="roomCodeInput">Join with room code</label>
-        <input id="roomCodeInput" type="text" maxlength="6" placeholder="ABC123" />
-
-        <div class="actions">
-          <button id="joinRoomBtn" class="button-secondary">Join Room</button>
-          <button id="refreshRoomBtn" class="button-secondary">Refresh Room</button>
+      </div>
+      <span class="vs-label">vs</span>
+      <div id="p2Card" class="p-card">
+        <div class="p-dot white"></div>
+        <div class="p-info">
+          <span class="p-name" id="p2Name">Waiting&hellip;</span>
+          <span class="p-pos" id="p2Pos">&mdash;</span>
         </div>
-      </section>
+      </div>
+    </div>
 
-      <section class="game-controls">
-        <h2>Game</h2>
-        <div class="actions">
-          <button id="rollDiceBtn" disabled>Roll Dice</button>
+    <div id="turnBanner" class="turn-banner state-wait">
+      <span id="turnText">Waiting for opponent&hellip;</span>
+    </div>
+
+    <div class="game-layout">
+      <div class="board-frame">
+        <div id="board" class="board" aria-label="Game board"></div>
+      </div>
+      <div class="side-col">
+        <div id="dice" class="dice">
+          <span id="diceChar" class="dice-val">?</span>
         </div>
-      </section>
+        <p id="lastAction" class="side-hint">Roll to start</p>
+        <button id="rollDiceBtn" class="roll-btn" disabled>Roll</button>
+        <p id="boardName" class="side-hint board-label">&mdash;</p>
+      </div>
+    </div>
 
-      <section class="legend">
-        <h2>Room info</h2>
-        <p id="roomCodeDisplay">Room code: -</p>
-        <p id="roleDisplay">Role: -</p>
-        <p id="playersDisplay">Players: -</p>
-      </section>
+    <div id="actionToast" class="toast hidden">
+      <span id="toastText"></span>
+    </div>
 
-      <section>
-        <h2>Move Log</h2>
-        <div id="log" class="log"></div>
-      </section>
-    </section>
+    <details class="log-panel">
+      <summary>Move log</summary>
+      <div id="log" class="log"></div>
+    </details>
+  </div>
 
-    <section class="board-panel">
-      <div id="board" class="board" aria-label="Snakes and Ladders board"></div>
-    </section>
-  </main>
+  <!-- WIN OVERLAY -->
+  <div id="winOverlay" class="win-overlay hidden">
+    <div class="win-box">
+      <div class="win-crown">👑</div>
+      <h2 id="winTitle">Victory!</h2>
+      <p id="winMessage">&mdash;</p>
+      <button id="newGameBtn" class="btn btn-primary">New Game</button>
+    </div>
+  </div>
 
   <script type="module" src="app.js"></script>
 </body>
