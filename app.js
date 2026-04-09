@@ -113,7 +113,7 @@ function setButtonsDisabled(disabled) {
   createRoomBtn.disabled = disabled;
   joinRoomBtn.disabled = disabled;
   refreshRoomBtn.disabled = disabled;
-  if (rollDiceBtn) rollDiceBtn.disabled = disabled;
+  /* rollDiceBtn state is managed exclusively by updateUI() */
 }
 
 /* ── Rendering ── */
@@ -205,6 +205,8 @@ function updateUI() {
     statusEl.textContent = "Waiting for player 2 to join\u2026";
   } else if (currentGame) {
     statusEl.textContent = "Current turn: " + currentGame.current_turn;
+  } else if (currentRoom) {
+    statusEl.textContent = "Game data not loaded \u2014 click Refresh Room.";
   } else {
     statusEl.textContent = "Game not started.";
   }
@@ -333,9 +335,9 @@ async function createRoom() {
 
     logMessage("Created room " + code + " as player1 on " + board.name + ".");
     subscribeToRoom(roomId);
-    updateUI();
   } finally {
     setButtonsDisabled(false);
+    updateUI();
   }
 }
 
@@ -401,7 +403,7 @@ async function joinRoom() {
       currentPlayers = safePlayers;
       logMessage("Rejoined room " + code + " as " + existing.role + ".");
       subscribeToRoom(room.id);
-      updateUI();
+      await loadRoomState(code);
       return;
     }
 
@@ -450,14 +452,25 @@ async function joinRoom() {
     await loadRoomState(code);
   } finally {
     setButtonsDisabled(false);
+    updateUI();
   }
 }
 
 /* ── Dice roll ── */
 
 async function rollDice() {
-  if (!currentGame || !currentMembership || !currentRoom) {
+  if (!currentRoom) {
     alert("Join a room first.");
+    return;
+  }
+
+  if (!currentGame) {
+    alert("Game data not loaded. Try clicking Refresh Room.");
+    return;
+  }
+
+  if (!currentMembership) {
+    alert("Player membership not found. Try refreshing the page.");
     return;
   }
 
@@ -476,6 +489,7 @@ async function rollDice() {
     return;
   }
 
+  if (rollDiceBtn) rollDiceBtn.disabled = true;
   setButtonsDisabled(true);
 
   try {
@@ -506,7 +520,6 @@ async function rollDice() {
 
       currentGame.last_roll = roll;
       currentGame.current_turn = nextTurn;
-      updateUI();
       return;
     }
 
@@ -552,10 +565,9 @@ async function rollDice() {
       const winnerPlayer = currentPlayers.find(function(p) { return p.role === winner; });
       logMessage((winnerPlayer?.player_name ?? winner) + " wins the game!");
     }
-
-    updateUI();
   } finally {
     setButtonsDisabled(false);
+    updateUI();
   }
 }
 
@@ -638,6 +650,11 @@ async function loadRoomState(roomCode) {
 
   if (gameError) {
     throw new Error("Game load failed: " + gameError.message);
+  }
+
+  if (!game) {
+    console.warn("No game found for room " + roomCode + " (room_id: " + room.id + "). Check RLS SELECT policy on the games table.");
+    logMessage("Warning: game data not found for this room. Check Supabase RLS policies on the games table.");
   }
 
   const { data: players, error: playersError } = await supabase
