@@ -10,32 +10,40 @@
   <main class="app">
     <section class="panel">
       <h1>Snakes and Ladders</h1>
-      <p class="sub">Phase 3 · Supabase auth wired in · five rotating boards · start at 0 · exact roll to win</p>
+      <p class="sub">Phase 4 · create room · join room · waiting room · Supabase-backed</p>
 
       <div class="stats">
         <p id="authStatus">Connecting to Supabase…</p>
-        <p id="status">Loading game…</p>
+        <p id="roomStatus">No room joined.</p>
+        <p id="status">Game not started.</p>
         <p id="boardName">Board: -</p>
         <p id="lastRoll">Last roll: -</p>
         <p id="positions">Black: 0 | White: 0</p>
       </div>
 
-      <div class="actions">
-        <button id="rollBtn">Roll Dice</button>
-        <button id="resetBtn" class="button-secondary">New Random Board</button>
-      </div>
+      <section class="room-controls">
+        <h2>Room</h2>
+        <label for="playerName">Player name</label>
+        <input id="playerName" type="text" maxlength="20" placeholder="Enter your name" />
+
+        <div class="actions">
+          <button id="createRoomBtn">Create Room</button>
+        </div>
+
+        <label for="roomCodeInput">Join with room code</label>
+        <input id="roomCodeInput" type="text" maxlength="6" placeholder="ABC123" />
+
+        <div class="actions">
+          <button id="joinRoomBtn" class="button-secondary">Join Room</button>
+          <button id="refreshRoomBtn" class="button-secondary">Refresh Room</button>
+        </div>
+      </section>
 
       <section class="legend">
-        <h2>Rules</h2>
-        <ul>
-          <li>Both players start at 0.</li>
-          <li>Roll 1–6 and move forward.</li>
-          <li>Landing on a ladder moves you up.</li>
-          <li>Landing on a snake moves you down.</li>
-          <li>You must roll exactly to land on 100.</li>
-          <li>Boards rotate randomly on reset.</li>
-          <li>Supabase auth is enabled for the next backend phases.</li>
-        </ul>
+        <h2>Room info</h2>
+        <p id="roomCodeDisplay">Room code: -</p>
+        <p id="roleDisplay">Role: -</p>
+        <p id="playersDisplay">Players: -</p>
       </section>
 
       <section>
