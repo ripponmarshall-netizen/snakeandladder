@@ -93,6 +93,122 @@ function validateBoardSet() {
   }
 }
 
+/* ── SVG overlay ── */
+
+function cellToSVG(square) {
+  const pos = getBoardPosition(square);
+  const rowFromTop = 9 - pos.rowFromBottom;
+  return { x: (pos.col + 0.5) * 10, y: (rowFromTop + 0.5) * 10 };
+}
+
+function drawSnake(svg, start, end, NS) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const px = -dy / dist;
+  const py = dx / dist;
+  const segments = 4;
+  const amp = Math.min(3.5, dist * 0.1);
+
+  let d = "M " + start.x.toFixed(1) + " " + start.y.toFixed(1);
+  for (let i = 0; i < segments; i++) {
+    const t1 = (i + 0.5) / segments;
+    const t2 = (i + 1) / segments;
+    const sign = i % 2 === 0 ? 1 : -1;
+    const cpx = start.x + dx * t1 + px * amp * sign;
+    const cpy = start.y + dy * t1 + py * amp * sign;
+    const ex = start.x + dx * t2;
+    const ey = start.y + dy * t2;
+    d += " Q " + cpx.toFixed(1) + " " + cpy.toFixed(1) + " " + ex.toFixed(1) + " " + ey.toFixed(1);
+  }
+
+  const path = document.createElementNS(NS, "path");
+  path.setAttribute("d", d);
+  path.setAttribute("stroke", "#e25555");
+  path.setAttribute("stroke-width", "1.6");
+  path.setAttribute("fill", "none");
+  path.setAttribute("opacity", "0.5");
+  path.setAttribute("stroke-linecap", "round");
+  svg.appendChild(path);
+
+  const head = document.createElementNS(NS, "circle");
+  head.setAttribute("cx", start.x.toFixed(1));
+  head.setAttribute("cy", start.y.toFixed(1));
+  head.setAttribute("r", "1.8");
+  head.setAttribute("fill", "#dc2626");
+  head.setAttribute("opacity", "0.6");
+  svg.appendChild(head);
+}
+
+function drawLadder(svg, start, end, NS) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const px = -dy / dist;
+  const py = dx / dist;
+  const off = 1.4;
+
+  const g = document.createElementNS(NS, "g");
+  g.setAttribute("opacity", "0.5");
+
+  for (let s = -1; s <= 1; s += 2) {
+    const rail = document.createElementNS(NS, "line");
+    rail.setAttribute("x1", (start.x + px * off * s).toFixed(1));
+    rail.setAttribute("y1", (start.y + py * off * s).toFixed(1));
+    rail.setAttribute("x2", (end.x + px * off * s).toFixed(1));
+    rail.setAttribute("y2", (end.y + py * off * s).toFixed(1));
+    rail.setAttribute("stroke", "#22a352");
+    rail.setAttribute("stroke-width", "0.9");
+    rail.setAttribute("stroke-linecap", "round");
+    g.appendChild(rail);
+  }
+
+  const rungs = Math.max(2, Math.round(dist / 7));
+  for (let i = 1; i < rungs; i++) {
+    const t = i / rungs;
+    const rx = start.x + dx * t;
+    const ry = start.y + dy * t;
+    const rung = document.createElementNS(NS, "line");
+    rung.setAttribute("x1", (rx + px * off).toFixed(1));
+    rung.setAttribute("y1", (ry + py * off).toFixed(1));
+    rung.setAttribute("x2", (rx - px * off).toFixed(1));
+    rung.setAttribute("y2", (ry - py * off).toFixed(1));
+    rung.setAttribute("stroke", "#22a352");
+    rung.setAttribute("stroke-width", "0.7");
+    rung.setAttribute("stroke-linecap", "round");
+    g.appendChild(rung);
+  }
+
+  svg.appendChild(g);
+}
+
+function renderOverlay() {
+  const existing = boardEl.querySelector(".board-overlay");
+  if (existing) existing.remove();
+
+  const board = findBoardById(currentGame?.board_id ?? boards[0].id);
+  const jumps = board.jumps;
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("class", "board-overlay");
+  svg.setAttribute("viewBox", "0 0 100 100");
+
+  for (const [fromStr, to] of Object.entries(jumps)) {
+    const from = Number(fromStr);
+    const isLadder = to > from;
+    const s = cellToSVG(from);
+    const e = cellToSVG(to);
+
+    if (isLadder) {
+      drawLadder(svg, s, e, NS);
+    } else {
+      drawSnake(svg, s, e, NS);
+    }
+  }
+
+  boardEl.appendChild(svg);
+}
+
 /* ── Utilities ── */
 
 function logMessage(message) {
@@ -177,6 +293,8 @@ function renderBoard() {
       const cell = document.createElement("div");
       cell.className = "cell";
 
+      if ((row + col) % 2 === 1) cell.classList.add("cell-alt");
+
       if (number === 1) cell.classList.add("cell-start");
       if (number === 100) cell.classList.add("cell-end");
 
@@ -237,6 +355,8 @@ function renderBoard() {
   prevP1Pos = p1Pos;
   prevP2Pos = p2Pos;
   animateMoves = false;
+
+  renderOverlay();
 }
 
 function updateUI() {

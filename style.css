@@ -229,7 +229,7 @@ input:focus {
   font-family: var(--mono);
   font-size: 1.05rem;
   font-weight: 700;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.22em;
   flex: 1;
 }
 
@@ -259,7 +259,7 @@ input:focus {
 .p-card.active {
   border-color: var(--accent);
   background: var(--accent-soft);
-  box-shadow: 0 0 0 3px rgba(34,197,94,0.1);
+  box-shadow: 0 0 0 3px rgba(34,197,94,0.12);
 }
 
 .p-dot {
@@ -268,6 +268,11 @@ input:focus {
   border-radius: 50%;
   border: 2px solid var(--ink);
   flex-shrink: 0;
+  transition: transform 0.25s;
+}
+
+.p-card.active .p-dot {
+  transform: scale(1.1);
 }
 
 .p-dot.black { background: #111; }
@@ -317,6 +322,7 @@ input:focus {
 .turn-banner.state-go {
   background: var(--accent);
   color: #fff;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.12);
 }
 
 .turn-banner.state-wait {
@@ -343,7 +349,7 @@ input:focus {
   border: 2px solid var(--ink);
   border-radius: var(--radius);
   padding: 4px;
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow), inset 0 0 0 1px rgba(0,0,0,0.03);
 }
 
 /* ── Board ── */
@@ -354,6 +360,13 @@ input:focus {
   gap: 1px;
   background: var(--dim);
   aspect-ratio: 1;
+  position: relative;
+}
+
+.board-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
 }
 
 .cell {
@@ -362,6 +375,10 @@ input:focus {
   padding: 2px 3px;
   min-width: 0;
   overflow: hidden;
+}
+
+.cell.cell-alt {
+  background: #f9f9f6;
 }
 
 .cell-num {
@@ -414,6 +431,7 @@ input:focus {
   height: 14px;
   border-radius: 50%;
   border: 2px solid var(--ink);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.18);
 }
 
 .token.black { background: #111; }
@@ -546,6 +564,7 @@ input:focus {
   max-width: 88vw;
   text-align: center;
   pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
 }
 
 @keyframes toast-up {
@@ -577,6 +596,7 @@ input:focus {
   padding: 0 16px 12px;
   max-height: 200px;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .log-entry {
