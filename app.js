@@ -128,7 +128,7 @@ function renderBoard() {
       if (jumps[number]) {
         const jumpEl = document.createElement("div");
         jumpEl.className = "jump-label";
-        jumpEl.textContent = jumps[number] > number ? `L→${jumps[number]}` : `S→${jumps[number]}`;
+        jumpEl.textContent = jumps[number] > number ? `L\u2192${jumps[number]}` : `S\u2192${jumps[number]}`;
         cell.appendChild(jumpEl);
       }
 
@@ -188,7 +188,7 @@ async function createRoom() {
   let code = generateRoomCode();
 
   for (let i = 0; i < 5; i += 1) {
-    const {  existing } = await supabase
+    const { data: existing } = await supabase
       .from("rooms")
       .select("id")
       .eq("code", code)
@@ -200,7 +200,7 @@ async function createRoom() {
 
   const board = randomBoard();
 
-  const {  room, error: roomError } = await supabase
+  const { data: room, error: roomError } = await supabase
     .from("rooms")
     .insert({
       code,
@@ -212,7 +212,7 @@ async function createRoom() {
 
   if (roomError) throw roomError;
 
-  const {  membership, error: membershipError } = await supabase
+  const { data: membership, error: membershipError } = await supabase
     .from("room_players")
     .insert({
       room_id: room.id,
@@ -225,7 +225,7 @@ async function createRoom() {
 
   if (membershipError) throw membershipError;
 
-  const {  game, error: gameError } = await supabase
+  const { data: game, error: gameError } = await supabase
     .from("games")
     .insert({
       room_id: room.id,
@@ -261,7 +261,7 @@ async function joinRoom() {
     return;
   }
 
-  const {  room, error: roomError } = await supabase
+  const { data: room, error: roomError } = await supabase
     .from("rooms")
     .select("*")
     .eq("code", code)
@@ -269,7 +269,7 @@ async function joinRoom() {
 
   if (roomError) throw roomError;
 
-  const {  existingPlayers, error: playersError } = await supabase
+  const { data: existingPlayers, error: playersError } = await supabase
     .from("room_players")
     .select("*")
     .eq("room_id", room.id);
@@ -289,7 +289,7 @@ async function joinRoom() {
     return;
   }
 
-  const {  membership, error: membershipError } = await supabase
+  const { data: membership, error: membershipError } = await supabase
     .from("room_players")
     .insert({
       room_id: room.id,
@@ -315,7 +315,7 @@ async function joinRoom() {
 }
 
 async function loadRoomState(roomCode) {
-  const {  room, error: roomError } = await supabase
+  const { data: room, error: roomError } = await supabase
     .from("rooms")
     .select("*")
     .eq("code", roomCode)
@@ -323,14 +323,14 @@ async function loadRoomState(roomCode) {
 
   if (roomError) throw roomError;
 
-  const {  players, error: playersError } = await supabase
+  const { data: players, error: playersError } = await supabase
     .from("room_players")
     .select("*")
     .eq("room_id", room.id);
 
   if (playersError) throw playersError;
 
-  const {  game, error: gameError } = await supabase
+  const { data: game, error: gameError } = await supabase
     .from("games")
     .select("*")
     .eq("room_id", room.id)
@@ -358,8 +358,8 @@ async function boot() {
     await ensureSignedIn();
     currentUser = await getCurrentUser();
 
-    authStatusEl.textContent = `Signed in anonymously: ${currentUser.id.slice(0, 8)}…`;
-    logMessage(`Supabase session ready for user ${currentUser.id.slice(0, 8)}…`);
+    authStatusEl.textContent = `Signed in anonymously: ${currentUser.id.slice(0, 8)}\u2026`;
+    logMessage(`Supabase session ready for user ${currentUser.id.slice(0, 8)}\u2026`);
 
     updateUI();
   } catch (error) {
