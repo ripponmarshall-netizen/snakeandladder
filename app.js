@@ -231,7 +231,7 @@ async function createRoom() {
   const code = await createUniqueRoomCode();
   const board = randomBoard();
 
-  const {  room, error: roomError } = await supabase
+  const { data: room, error: roomError } = await supabase
     .from("rooms")
     .insert({
       code,
@@ -249,7 +249,7 @@ async function createRoom() {
     throw new Error("Room creation returned no room.");
   }
 
-  const {  membership, error: membershipError } = await supabase
+  const { data: membership, error: membershipError } = await supabase
     .from("room_players")
     .insert({
       room_id: room.id,
@@ -268,7 +268,7 @@ async function createRoom() {
     throw new Error("Room membership creation returned no membership.");
   }
 
-  const {  game, error: gameError } = await supabase
+  const { data: game, error: gameError } = await supabase
     .from("games")
     .insert({
       room_id: room.id,
@@ -315,7 +315,7 @@ async function joinRoom() {
     throw new Error("No authenticated user found.");
   }
 
-  const {  room, error: roomError } = await supabase
+  const { data: room, error: roomError } = await supabase
     .from("rooms")
     .select("*")
     .eq("code", code)
@@ -329,7 +329,7 @@ async function joinRoom() {
     throw new Error("Room not found for that code.");
   }
 
-  const {  players, error: playersError } = await supabase
+  const { data: players, error: playersError } = await supabase
     .from("room_players")
     .select("*")
     .eq("room_id", room.id);
@@ -356,7 +356,7 @@ async function joinRoom() {
   const takenRoles = new Set(safePlayers.map(player => player.role));
   const role = takenRoles.has("player1") ? "player2" : "player1";
 
-  const {  membership, error: membershipError } = await supabase
+  const { data: membership, error: membershipError } = await supabase
     .from("room_players")
     .insert({
       room_id: room.id,
@@ -384,7 +384,7 @@ async function joinRoom() {
 }
 
 async function loadRoomState(roomCode) {
-  const {  room, error: roomError } = await supabase
+  const { data: room, error: roomError } = await supabase
     .from("rooms")
     .select("*")
     .eq("code", roomCode)
@@ -398,7 +398,7 @@ async function loadRoomState(roomCode) {
     throw new Error("Room not found.");
   }
 
-  const {  game, error: gameError } = await supabase
+  const { data: game, error: gameError } = await supabase
     .from("games")
     .select("*")
     .eq("room_id", room.id)
@@ -408,7 +408,7 @@ async function loadRoomState(roomCode) {
     throw new Error(`Game load failed: ${gameError.message}`);
   }
 
-  const {  players, error: playersError } = await supabase
+  const { data: players, error: playersError } = await supabase
     .from("room_players")
     .select("*")
     .eq("room_id", room.id);
