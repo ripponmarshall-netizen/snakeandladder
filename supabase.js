@@ -7,7 +7,7 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 export async function ensureSignedIn() {
   const {
-     { session },
+    data: { session },
     error: sessionError
   } = await supabase.auth.getSession();
 
@@ -22,7 +22,7 @@ export async function ensureSignedIn() {
 
 export async function getCurrentUser() {
   const {
-     { user },
+    data: { user },
     error
   } = await supabase.auth.getUser();
 
