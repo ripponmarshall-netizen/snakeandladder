@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#1a1a1a" />
   <meta name="color-scheme" content="light" />
+  <meta name="description" content="A minimal two-player Snakes & Ladders game" />
   <title>Snakes &amp; Ladders</title>
   <link rel="stylesheet" href="style.css" />
 </head>
@@ -13,7 +14,11 @@
   <!-- LOBBY -->
   <div id="lobby" class="lobby">
     <div class="lobby-inner">
-      <h1 class="lobby-title">Snakes<br>&amp; Ladders</h1>
+      <h1 class="lobby-title">
+        <span class="title-top">Snakes</span>
+        <span class="title-amp">&amp;</span>
+        <span class="title-bottom">Ladders</span>
+      </h1>
       <p class="lobby-sub" id="authStatus">Connecting to Supabase&hellip;</p>
       <div class="lobby-card">
         <label for="playerName">Your name</label>
@@ -24,6 +29,7 @@
         <input id="roomCodeInput" type="text" maxlength="6" placeholder="ABC123" autocomplete="off" />
         <button id="joinRoomBtn" class="btn btn-outline btn-block">Join Room</button>
       </div>
+      <p class="lobby-footnote">A quiet game for two</p>
     </div>
   </div>
 

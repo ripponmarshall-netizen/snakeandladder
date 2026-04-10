@@ -30,6 +30,7 @@
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --mono: "SF Mono", "Fira Code", "Cascadia Code", "Consolas", monospace;
   --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out: cubic-bezier(0.25, 0.46, 0.45, 0.94);
 }
 
 html { height: 100%; scroll-behavior: smooth; }
@@ -73,13 +74,36 @@ body {
   text-align: center;
 }
 
+/* ── Branded Title ── */
+
 .lobby-title {
-  font-size: 2.4rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
   font-weight: 700;
-  line-height: 1.05;
-  letter-spacing: -0.03em;
   color: var(--ink);
   margin-bottom: 10px;
+  line-height: 1;
+}
+
+.title-top,
+.title-bottom {
+  display: block;
+  font-size: 2.5rem;
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  line-height: 1.05;
+}
+
+.title-amp {
+  display: block;
+  font-size: 0.95rem;
+  font-weight: 400;
+  color: var(--muted);
+  letter-spacing: 0.06em;
+  line-height: 1.8;
+  font-style: italic;
 }
 
 .lobby-sub {
@@ -96,6 +120,14 @@ body {
   padding: 28px 24px;
   box-shadow: var(--shadow);
   text-align: left;
+}
+
+.lobby-footnote {
+  margin-top: 22px;
+  font-size: 0.72rem;
+  color: var(--dim);
+  letter-spacing: 0.05em;
+  text-transform: lowercase;
 }
 
 label {
@@ -299,7 +331,7 @@ input:focus {
   border-radius: 50%;
   border: 2px solid var(--ink-soft);
   flex-shrink: 0;
-  transition: transform 0.3s var(--ease);
+  transition: transform 0.3s var(--ease-out);
 }
 
 .p-card.active .p-dot {
@@ -454,6 +486,30 @@ input:focus {
 .jump-lbl.ladder { color: #2d8a5e; }
 .jump-lbl.snake  { color: #c04040; }
 
+/* ── SVG Overlay Lines ── */
+
+.board-overlay line.ladder-line {
+  stroke: var(--accent);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  opacity: 0.3;
+}
+
+.board-overlay line.ladder-rung {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  opacity: 0.2;
+}
+
+.board-overlay path.snake-line {
+  stroke: var(--red);
+  stroke-width: 3;
+  stroke-linecap: round;
+  fill: none;
+  opacity: 0.25;
+}
+
 /* ── Tokens ── */
 
 .tokens {
@@ -470,20 +526,22 @@ input:focus {
   border-radius: 50%;
   border: 2px solid var(--ink-soft);
   box-shadow: 0 1px 2px rgba(0,0,0,0.12);
+  transition: transform 0.35s var(--ease-out);
 }
 
 .token.black { background: var(--ink); }
 .token.white { background: #fff; }
 
 .token.bounce {
-  animation: tk-land 0.3s var(--ease);
+  animation: tk-hop 0.4s var(--ease-out);
 }
 
-@keyframes tk-land {
-  0%   { transform: scale(1); }
-  40%  { transform: scale(1.45); }
-  70%  { transform: scale(0.93); }
-  100% { transform: scale(1); }
+@keyframes tk-hop {
+  0%   { transform: translateY(0) scale(1); }
+  25%  { transform: translateY(-5px) scale(1.04); }
+  50%  { transform: translateY(-7px) scale(1.06); }
+  75%  { transform: translateY(-2px) scale(1.01); }
+  100% { transform: translateY(0) scale(1); }
 }
 
 /* ── Side column ── */
@@ -515,16 +573,14 @@ input:focus {
 }
 
 .dice.rolling {
-  animation: dice-shake 0.3s var(--ease);
+  animation: dice-tilt 0.35s var(--ease-out);
 }
 
-@keyframes dice-shake {
-  0%   { transform: rotate(0)     scale(1); }
-  20%  { transform: rotate(-8deg) scale(1.03); }
-  40%  { transform: rotate(6deg)  scale(1.05); }
-  60%  { transform: rotate(-3deg) scale(1.02); }
-  80%  { transform: rotate(1deg)  scale(1); }
-  100% { transform: rotate(0)     scale(1); }
+@keyframes dice-tilt {
+  0%   { transform: rotate(0deg)  scale(1); }
+  30%  { transform: rotate(-6deg) scale(1.03); }
+  60%  { transform: rotate(4deg)  scale(1.02); }
+  100% { transform: rotate(0deg)  scale(1); }
 }
 
 .dice-val {
@@ -582,12 +638,12 @@ input:focus {
   border-color: var(--accent);
   color: #fff;
   cursor: pointer;
-  animation: roll-glow 2.5s ease-in-out infinite;
+  animation: roll-glow 2.8s ease-in-out infinite;
 }
 
 @keyframes roll-glow {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(45, 138, 94, 0.2); }
-  50%      { box-shadow: 0 0 0 6px rgba(45, 138, 94, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(45, 138, 94, 0.18); }
+  50%      { box-shadow: 0 0 0 5px rgba(45, 138, 94, 0); }
 }
 
 /* ── Toast ── */
@@ -604,7 +660,7 @@ input:focus {
   font-size: 0.8rem;
   font-weight: 600;
   z-index: 100;
-  animation: toast-up 0.25s var(--ease);
+  animation: toast-up 0.3s var(--ease-out);
   max-width: 88vw;
   text-align: center;
   pointer-events: none;
@@ -692,11 +748,11 @@ input:focus {
   max-width: 300px;
   width: 88%;
   box-shadow: var(--shadow-lg);
-  animation: pop-in 0.35s var(--ease);
+  animation: pop-in 0.35s var(--ease-out);
 }
 
 @keyframes pop-in {
-  from { transform: scale(0.92); opacity: 0; }
+  from { transform: scale(0.94); opacity: 0; }
   to   { transform: scale(1);    opacity: 1; }
 }
 
@@ -763,12 +819,30 @@ input:focus {
   .turn-banner { padding: 10px 14px; }
   .log-panel { margin: 0 14px 14px; }
   .toast { bottom: 16px; }
+
+  .title-top,
+  .title-bottom { font-size: 2.1rem; }
+  .title-amp { font-size: 0.85rem; }
 }
 
 @media (max-width: 380px) {
-  .lobby-title { font-size: 2rem; }
+  .title-top,
+  .title-bottom { font-size: 1.85rem; }
   .lobby-card { padding: 22px 18px; }
   .dice { width: 46px; height: 46px; }
   .dice-val { font-size: 1.5rem; }
   .roll-btn { min-height: 44px; font-size: 0.88rem; }
+}
+
+/* ═══════════════════ REDUCED MOTION ═══════════════════ */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
