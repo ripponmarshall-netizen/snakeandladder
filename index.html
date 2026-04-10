@@ -13,7 +13,12 @@
   <!-- LOBBY -->
   <div id="lobby" class="lobby">
     <div class="lobby-inner">
-      <h1 class="lobby-title">Snakes<br>&amp; Ladders</h1>
+      <!-- [TITLE REDESIGN] Branded game typography with structured spans -->
+      <h1 class="lobby-title">
+        <span class="title-word">Snakes</span>
+        <span class="title-amp">&amp;</span>
+        <span class="title-word">Ladders</span>
+      </h1>
       <p class="lobby-sub" id="authStatus">Connecting to Supabase&hellip;</p>
       <div class="lobby-card">
         <label for="playerName">Your name</label>
@@ -24,6 +29,8 @@
         <input id="roomCodeInput" type="text" maxlength="6" placeholder="ABC123" autocomplete="off" />
         <button id="joinRoomBtn" class="btn btn-outline btn-block">Join Room</button>
       </div>
+      <!-- [FOOTNOTE] Quiet premium brand attribution -->
+      <p class="lobby-footnote">Workflow Coaching and Optimisation Co.</p>
     </div>
   </div>
 
