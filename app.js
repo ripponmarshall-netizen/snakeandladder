@@ -101,7 +101,10 @@ function cellToSVG(square) {
   return { x: (pos.col + 0.5) * 10, y: (rowFromTop + 0.5) * 10 };
 }
 
+/* ── [SNAKE VISUALS] Enhanced SVG snake with layered texture and depth ── */
+
 function drawSnake(svg, start, end, NS) {
+  /* Path calculation — UNCHANGED from original */
   const dx = end.x - start.x;
   const dy = end.y - start.y;
   const dist = Math.sqrt(dx * dx + dy * dy);
@@ -121,15 +124,64 @@ function drawSnake(svg, start, end, NS) {
     const ey = start.y + dy * t2;
     d += " Q " + cpx.toFixed(1) + " " + cpy.toFixed(1) + " " + ex.toFixed(1) + " " + ey.toFixed(1);
   }
+  /* --- End unchanged path calculation --- */
 
-  const path = document.createElementNS(NS, "path");
-  path.setAttribute("d", d);
-  path.setAttribute("stroke", "#e25555");
-  path.setAttribute("stroke-width", "1.6");
-  path.setAttribute("fill", "none");
-  path.setAttribute("opacity", "0.5");
-  path.setAttribute("stroke-linecap", "round");
-  svg.appendChild(path);
+  /* [SNAKE TEXTURE] Layered body group for refined depth */
+  const g = document.createElementNS(NS, "g");
+
+  /* Soft shadow — adds subtle depth behind the body */
+  const shadow = document.createElementNS(NS, "path");
+  shadow.setAttribute("d", d);
+  shadow.setAttribute("stroke", "#b33030");
+  shadow.setAttribute("stroke-width", "2.6");
+  shadow.setAttribute("fill", "none");
+  shadow.setAttribute("opacity", "0.12");
+  shadow.setAttribute("stroke-linecap", "round");
+  g.appendChild(shadow);
+
+  /* Main body stroke */
+  const body = document.createElementNS(NS, "path");
+  body.setAttribute("d", d);
+  body.setAttribute("stroke", "#e25555");
+  body.setAttribute("stroke-width", "1.6");
+  body.setAttribute("fill", "none");
+  body.setAttribute("opacity", "0.5");
+  body.setAttribute("stroke-linecap", "round");
+  g.appendChild(body);
+
+  /* Scale pattern — dashed overlay for gentle patterning */
+  const scales = document.createElementNS(NS, "path");
+  scales.setAttribute("d", d);
+  scales.setAttribute("stroke", "#c04040");
+  scales.setAttribute("stroke-width", "0.9");
+  scales.setAttribute("fill", "none");
+  scales.setAttribute("opacity", "0.18");
+  scales.setAttribute("stroke-linecap", "round");
+  scales.setAttribute("stroke-dasharray", "1.2 2.8");
+  g.appendChild(scales);
+
+  /* Highlight — lighter line for shading contour */
+  const hl = document.createElementNS(NS, "path");
+  hl.setAttribute("d", d);
+  hl.setAttribute("stroke", "#ff9999");
+  hl.setAttribute("stroke-width", "0.4");
+  hl.setAttribute("fill", "none");
+  hl.setAttribute("opacity", "0.2");
+  hl.setAttribute("stroke-linecap", "round");
+  g.appendChild(hl);
+
+  svg.appendChild(g);
+
+  /* [SNAKE HEAD] 3D head with shadow and highlight */
+  const headG = document.createElementNS(NS, "g");
+
+  const headShadow = document.createElementNS(NS, "circle");
+  headShadow.setAttribute("cx", (start.x + 0.3).toFixed(1));
+  headShadow.setAttribute("cy", (start.y + 0.3).toFixed(1));
+  headShadow.setAttribute("r", "2.0");
+  headShadow.setAttribute("fill", "#8b1a1a");
+  headShadow.setAttribute("opacity", "0.18");
+  headG.appendChild(headShadow);
 
   const head = document.createElementNS(NS, "circle");
   head.setAttribute("cx", start.x.toFixed(1));
@@ -137,7 +189,26 @@ function drawSnake(svg, start, end, NS) {
   head.setAttribute("r", "1.8");
   head.setAttribute("fill", "#dc2626");
   head.setAttribute("opacity", "0.6");
-  svg.appendChild(head);
+  headG.appendChild(head);
+
+  const headHL = document.createElementNS(NS, "circle");
+  headHL.setAttribute("cx", (start.x - 0.4).toFixed(1));
+  headHL.setAttribute("cy", (start.y - 0.4).toFixed(1));
+  headHL.setAttribute("r", "0.55");
+  headHL.setAttribute("fill", "#ff9999");
+  headHL.setAttribute("opacity", "0.35");
+  headG.appendChild(headHL);
+
+  svg.appendChild(headG);
+
+  /* Tail taper */
+  const tail = document.createElementNS(NS, "circle");
+  tail.setAttribute("cx", end.x.toFixed(1));
+  tail.setAttribute("cy", end.y.toFixed(1));
+  tail.setAttribute("r", "0.7");
+  tail.setAttribute("fill", "#e25555");
+  tail.setAttribute("opacity", "0.3");
+  svg.appendChild(tail);
 }
 
 function drawLadder(svg, start, end, NS) {
@@ -277,6 +348,200 @@ function animateDice(value) {
   diceEl.classList.add("rolling");
 }
 
+/* ═══════════════════════════════════════════════════════
+   [PIECE HOP ANIMATION] Token movement system
+   Handles tile-to-tile hops, ladder climbs, snake descents.
+   Pure visual layer — zero game logic changes.
+   ═══════════════════════════════════════════════════════ */
+
+let activeGhost = null;
+
+/* Get a square's pixel position relative to .board-frame */
+function getSquareTokenPos(square) {
+  const cell = boardEl.querySelector("[data-square='" + square + "']");
+  if (!cell) return null;
+  const frameEl = boardEl.closest(".board-frame");
+  if (!frameEl) return null;
+  const cr = cell.getBoundingClientRect();
+  const fr = frameEl.getBoundingClientRect();
+  const size = activeGhost ? (activeGhost.offsetWidth || 14) : 14;
+  return {
+    left: cr.left - fr.left + (cr.width - size) / 2,
+    top: cr.top - fr.top + (cr.height - size) / 2
+  };
+}
+
+/* Animate a hop with a subtle vertical arc (physical, not springy) */
+function hopTo(el, targetLeft, targetTop, duration) {
+  return new Promise(function (resolve) {
+    const startLeft = parseFloat(el.style.left) || 0;
+    const startTop = parseFloat(el.style.top) || 0;
+    const dLeft = targetLeft - startLeft;
+    const dTop = targetTop - startTop;
+    const startTime = performance.now();
+
+    function frame(now) {
+      const t = Math.min((now - startTime) / duration, 1);
+      /* Cubic ease-out for controlled deceleration */
+      const ease = 1 - Math.pow(1 - t, 3);
+      /* Parabolic arc: peaks at midpoint, 6px height */
+      const arc = -6 * Math.sin(t * Math.PI);
+
+      el.style.left = (startLeft + dLeft * ease) + "px";
+      el.style.top = (startTop + dTop * ease + arc) + "px";
+
+      if (t < 1) {
+        requestAnimationFrame(frame);
+      } else {
+        el.style.left = targetLeft + "px";
+        el.style.top = targetTop + "px";
+        resolve();
+      }
+    }
+    requestAnimationFrame(frame);
+  });
+}
+
+/* [LADDER/SNAKE TRAVERSAL] Smooth slide with subtle scale pulse */
+function slideTo(el, targetLeft, targetTop, duration) {
+  return new Promise(function (resolve) {
+    const startLeft = parseFloat(el.style.left) || 0;
+    const startTop = parseFloat(el.style.top) || 0;
+    const dLeft = targetLeft - startLeft;
+    const dTop = targetTop - startTop;
+    const startTime = performance.now();
+
+    function frame(now) {
+      const t = Math.min((now - startTime) / duration, 1);
+      /* Quartic ease-out: fast start, smooth settle */
+      const ease = 1 - Math.pow(1 - t, 4);
+      /* Gentle scale pulse during traversal */
+      const scale = 1 + 0.12 * Math.sin(t * Math.PI);
+
+      el.style.left = (startLeft + dLeft * ease) + "px";
+      el.style.top = (startTop + dTop * ease) + "px";
+      el.style.transform = "scale(" + scale.toFixed(3) + ")";
+
+      if (t < 1) {
+        requestAnimationFrame(frame);
+      } else {
+        el.style.left = targetLeft + "px";
+        el.style.top = targetTop + "px";
+        el.style.transform = "scale(1)";
+        resolve();
+      }
+    }
+    requestAnimationFrame(frame);
+  });
+}
+
+function hideRealToken(square, color) {
+  const cell = boardEl.querySelector("[data-square='" + square + "']");
+  if (!cell) return;
+  const token = cell.querySelector(".token." + color);
+  if (token) token.style.opacity = "0";
+}
+
+function showRealToken(square, color) {
+  const cell = boardEl.querySelector("[data-square='" + square + "']");
+  if (!cell) return;
+  const token = cell.querySelector(".token." + color);
+  if (token) {
+    token.style.opacity = "1";
+    /* Re-trigger landing bounce for satisfying arrival */
+    token.classList.remove("bounce");
+    void token.offsetWidth;
+    token.classList.add("bounce");
+  }
+}
+
+async function animateTokenMove(fromSquare, toSquare, color) {
+  /* [ACCESSIBILITY] Respect reduced-motion preference */
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    showRealToken(toSquare, color);
+    return;
+  }
+
+  /* Skip animation for winning move (let overlay take focus) */
+  if (currentGame?.winner) {
+    showRealToken(toSquare, color);
+    return;
+  }
+
+  /* Clean up any existing ghost from a previous animation */
+  if (activeGhost) {
+    activeGhost.remove();
+    activeGhost = null;
+  }
+
+  const frameEl = boardEl.closest(".board-frame");
+  if (!frameEl) { showRealToken(toSquare, color); return; }
+
+  const board = findBoardById(currentGame?.board_id ?? boards[0].id);
+  const roll = currentGame?.last_roll ?? 0;
+  let rawLanding = fromSquare + roll;
+
+  /* Bounce case: player stays in place, no movement to animate */
+  if (rawLanding > 100) {
+    showRealToken(toSquare, color);
+    return;
+  }
+
+  const jumpDest = board.jumps[rawLanding];
+  const hasJump = jumpDest !== undefined;
+  const isLadder = hasJump && jumpDest > rawLanding;
+
+  /* Create ghost token at start position */
+  const ghost = document.createElement("div");
+  ghost.className = "ghost-token " + color;
+  frameEl.appendChild(ghost);
+  activeGhost = ghost;
+
+  const startPos = getSquareTokenPos(fromSquare);
+  if (!startPos) {
+    ghost.remove();
+    activeGhost = null;
+    showRealToken(toSquare, color);
+    return;
+  }
+
+  ghost.style.left = startPos.left + "px";
+  ghost.style.top = startPos.top + "px";
+
+  /* Wait one frame so the initial position renders before animation */
+  await new Promise(function (r) { requestAnimationFrame(r); });
+  if (activeGhost !== ghost) return;
+
+  /* Phase 1: Hop tile-by-tile to the landing square */
+  for (let sq = fromSquare + 1; sq <= rawLanding; sq++) {
+    const target = getSquareTokenPos(sq);
+    if (!target || activeGhost !== ghost) break;
+    await hopTo(ghost, target.left, target.top, 260);
+  }
+
+  /* Phase 2: [LADDER TRAVERSAL / SNAKE DESCENT] distinct from normal hops */
+  if (hasJump && activeGhost === ghost) {
+    /* Brief pause at the junction for visual clarity */
+    await new Promise(function (r) { setTimeout(r, 80); });
+    if (activeGhost !== ghost) return;
+
+    ghost.classList.add(isLadder ? "climb-glow" : "descend-glow");
+    const jumpTarget = getSquareTokenPos(toSquare);
+    if (jumpTarget) {
+      await slideTo(ghost, jumpTarget.left, jumpTarget.top, isLadder ? 420 : 380);
+    }
+  }
+
+  /* Remove ghost and reveal real token */
+  if (activeGhost === ghost) {
+    ghost.remove();
+    activeGhost = null;
+  }
+  showRealToken(toSquare, color);
+}
+
+/* ═══════════════════ END ANIMATION SYSTEM ═══════════════════ */
+
 /* ── Rendering ── */
 
 function renderBoard() {
@@ -292,6 +557,8 @@ function renderBoard() {
       const number = getCellNumber(row, col);
       const cell = document.createElement("div");
       cell.className = "cell";
+      /* [PIECE HOP] data-square enables animation position lookup */
+      cell.setAttribute("data-square", number);
 
       if ((row + col) % 2 === 1) cell.classList.add("cell-alt");
 
@@ -360,7 +627,20 @@ function renderBoard() {
 }
 
 function updateUI() {
+  /* ── [PIECE HOP] Capture pre-render positions for animation ── */
+  const shouldAnimate = animateMoves;
+  const oldP1 = prevP1Pos;
+  const oldP2 = prevP2Pos;
+  const newP1 = currentGame?.player1_position ?? 0;
+  const newP2 = currentGame?.player2_position ?? 0;
+
   renderBoard();
+
+  /* ── [PIECE HOP] Hide destination tokens during ghost animation ── */
+  if (shouldAnimate) {
+    if (oldP1 !== newP1 && oldP1 > 0 && newP1 > 0) hideRealToken(newP1, "black");
+    if (oldP2 !== newP2 && oldP2 > 0 && newP2 > 0) hideRealToken(newP2, "white");
+  }
 
   /* Board name */
   boardNameEl.textContent = currentGame
@@ -433,6 +713,12 @@ function updateUI() {
 
   /* Dice highlight */
   diceEl.classList.toggle("your-turn", !!isMyTurn);
+
+  /* ── [PIECE HOP / LADDER / SNAKE TRAVERSAL] Fire movement animations ── */
+  if (shouldAnimate) {
+    if (oldP1 !== newP1 && oldP1 > 0 && newP1 > 0) animateTokenMove(oldP1, newP1, "black");
+    if (oldP2 !== newP2 && oldP2 > 0 && newP2 > 0) animateTokenMove(oldP2, newP2, "white");
+  }
 }
 
 /* ── Room creation ── */
