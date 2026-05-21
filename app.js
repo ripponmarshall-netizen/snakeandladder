@@ -1272,10 +1272,23 @@ async function createRoom() {
   setButtonsDisabled(true);
   try {
     /* Atomic server-side create: room + player1 + game, unique code, random board. */
-    const { data, error } = await supabase.rpc("create_room", {
+    let response = await supabase.rpc("create_room", {
       p_player_name: playerName,
       p_max_players: maxPlayers
     });
+
+    if (response.error && /schema cache/i.test(response.error.message || "")) {
+      /* Backward-compatible fallback for projects that haven't applied
+         the 3-4 player migration yet (legacy signature create_room(text)). */
+      response = await supabase.rpc("create_room", {
+        p_player_name: playerName
+      });
+      if (!response.error) {
+        showToast("Server is using legacy 2-player rooms; apply latest DB migrations for 3-4 players.");
+      }
+    }
+
+    const { data, error } = response;
     if (error) { notifyError(errorMessage(error, "Could not create a room.")); return; }
 
     const row = Array.isArray(data) ? data[0] : data;
