@@ -126,6 +126,22 @@ function reducedMotion() {
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
+/* Crypto-grade uniform random in [0,1); falls back to Math.random where the
+   Web Crypto API is unavailable. Used for dice rolls so they draw from a
+   high-quality entropy source (distribution stays uniform). */
+function cryptoRandom() {
+  const c = (typeof crypto !== "undefined" && crypto.getRandomValues) ? crypto : null;
+  if (!c) return Math.random();
+  const buf = new Uint32Array(1);
+  c.getRandomValues(buf);
+  return buf[0] / 4294967296; // 2^32
+}
+
+/* A single uniform die roll, 1..6. */
+function rollDie() {
+  return 1 + Math.floor(cryptoRandom() * 6);
+}
+
 function raf() {
   return new Promise(function (r) { requestAnimationFrame(r); });
 }
@@ -440,6 +456,10 @@ function shakeDice() {
    ═══════════════════════════════════════════════════════ */
 
 let activeGhost = null;
+/* Captured screen positions (frame-relative) of pieces in the start pen, taken
+   just before a re-render, so a piece's first move can launch from where it
+   was waiting. Keyed by role; reset every updateUI. */
+let startLaunch = {};
 
 /* Get a square's pixel position relative to .board-frame */
 function getSquareTokenPos(square) {
@@ -450,6 +470,21 @@ function getSquareTokenPos(square) {
   const cr = cell.getBoundingClientRect();
   const fr = frameEl.getBoundingClientRect();
   const size = activeGhost ? (activeGhost.offsetWidth || 14) : 14;
+  return {
+    left: cr.left - fr.left + (cr.width - size) / 2,
+    top: cr.top - fr.top + (cr.height - size) / 2
+  };
+}
+
+/* Frame-relative position of a seat's token in the start pen (or null). */
+function getStartPenPos(role) {
+  const frameEl = boardEl.closest(".board-frame");
+  const pen = frameEl && frameEl.querySelector(".start-pen");
+  const tk = pen && pen.querySelector('.token[data-role="' + role + '"]');
+  if (!tk || !frameEl) return null;
+  const cr = tk.getBoundingClientRect();
+  const fr = frameEl.getBoundingClientRect();
+  const size = 16;
   return {
     left: cr.left - fr.left + (cr.width - size) / 2,
     top: cr.top - fr.top + (cr.height - size) / 2
@@ -600,7 +635,9 @@ async function animateTokenMove(fromSquare, toSquare, seat, move) {
   const ghost = makeGhost(frameEl, seat);
   activeGhost = ghost;
 
-  const startPos = getSquareTokenPos(fromSquare);
+  const startPos = fromSquare === 0
+    ? (startLaunch[seat.role] || getSquareTokenPos(1))
+    : getSquareTokenPos(fromSquare);
   if (!startPos) {
     ghost.remove();
     activeGhost = null;
@@ -649,13 +686,23 @@ async function animateTokenMove(fromSquare, toSquare, seat, move) {
   const hasJump = move.jumpType !== null;
   const isLadder = move.jumpType === "ladder";
 
-  /* Phase 1: Hop tile-by-tile to the landing square */
-  for (let sq = fromSquare + 1; sq <= rawLanding; sq++) {
-    const target = getSquareTokenPos(sq);
-    if (!target || activeGhost !== ghost) break;
-    await hopTo(ghost, target.left, target.top, 220);
-    sfx.playHop();
-    emitTrail(ghost, seat.color || DEFAULT_SEAT_COLORS[idx - 1]);
+  /* Phase 1: hop to the landing square. The first move (from the start pen,
+     fromSquare 0) is a single leap onto the board; later moves hop tile-by-tile. */
+  if (fromSquare === 0) {
+    const target = getSquareTokenPos(rawLanding);
+    if (target && activeGhost === ghost) {
+      await hopTo(ghost, target.left, target.top, 360);
+      sfx.playHop();
+      emitTrail(ghost, seat.color || DEFAULT_SEAT_COLORS[idx - 1]);
+    }
+  } else {
+    for (let sq = fromSquare + 1; sq <= rawLanding; sq++) {
+      const target = getSquareTokenPos(sq);
+      if (!target || activeGhost !== ghost) break;
+      await hopTo(ghost, target.left, target.top, 220);
+      sfx.playHop();
+      emitTrail(ghost, seat.color || DEFAULT_SEAT_COLORS[idx - 1]);
+    }
   }
 
   if (!hasJump) haptics.land();
@@ -1036,6 +1083,7 @@ function renderStartPen(seats) {
 
     const tk = document.createElement("div");
     tk.className = "token seat-" + s.idx;
+    tk.setAttribute("data-role", s.role);
     tk.style.setProperty("--tok", s.color);
     tk.title = s.name;
     tk.setAttribute("aria-label", s.name + " at start");
@@ -1056,13 +1104,25 @@ function updateUI() {
   const shouldAnimate = animateMoves;
   const prev = Object.assign({}, prevPositions);
 
+  /* Capture start-pen positions of pieces about to make their first move,
+     BEFORE renderBoard re-renders the pen (which drops the mover). */
+  startLaunch = {};
+  if (shouldAnimate) {
+    seats.forEach(function (s) {
+      if ((prev[s.role] || 0) === 0 && s.position > 0) {
+        const p = getStartPenPos(s.role);
+        if (p) startLaunch[s.role] = p;
+      }
+    });
+  }
+
   renderBoard();
 
   /* Hide destination tokens that are about to be animated by a ghost. */
   if (shouldAnimate) {
     seats.forEach(function (s) {
       const oldPos = prev[s.role] || 0;
-      if (oldPos !== s.position && oldPos > 0 && s.position > 0) hideRealToken(s.position, s.idx);
+      if (oldPos !== s.position && s.position > 0) hideRealToken(s.position, s.idx);
     });
   }
 
@@ -1093,7 +1153,7 @@ function updateUI() {
   if (shouldAnimate) {
     seats.forEach(function (s) {
       const oldPos = prev[s.role] || 0;
-      if (oldPos !== s.position && oldPos > 0 && s.position > 0) {
+      if (oldPos !== s.position && s.position > 0) {
         fireSeatAnimation(oldPos, s.position, s, moveForSeat(s, oldPos));
       }
     });
@@ -1593,7 +1653,7 @@ function syncFromLocal() {
 
 function rollLocal() {
   if (!localState || !localGame.isHumanTurn(localState) || busyAnimating) return;
-  const roll = 1 + Math.floor(Math.random() * 6);
+  const roll = rollDie();
   applyLocalRoll(roll, armedPowerUp);
 }
 
@@ -1604,7 +1664,7 @@ function applyLocalRoll(roll, chosen) {
   shakeDice();
   haptics.roll();
 
-  const result = localGame.stepRoll(localState, roll, chosen, Math.random);
+  const result = localGame.stepRoll(localState, roll, chosen, cryptoRandom);
   localState = result.state;
   armedPowerUp = null;
 
@@ -1693,7 +1753,7 @@ function scheduleAIIfNeeded() {
     if (gameMode !== "local" || !localState || localState.winner) return;
     if (localState.current_turn !== role || busyAnimating) return;
     const chosen = aiPolicy.choosePowerUp(localState, role, seat.difficulty);
-    const roll = 1 + Math.floor(Math.random() * 6);
+    const roll = rollDie();
     applyLocalRoll(roll, chosen);
   }, AI_THINK_MS);
 }
