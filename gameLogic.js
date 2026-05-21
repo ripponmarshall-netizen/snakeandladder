@@ -56,6 +56,36 @@ export function resolveMove(pos, roll, jumps) {
   return { landing: raw, newPos: raw, jumpType: null, winner: raw === 100, bounced: false };
 }
 
+/* Resolve a move with power-up effects applied. Wraps resolveMove so the base
+   rules stay identical (and online untouched). `roll` is the FINAL amount — the
+   double-roll power-up sums the two dice in localGame before calling here.
+   - effects.shield: negate the next snake (stay on the landing square).
+   Returns a resolveMove-compatible object plus a `shieldConsumed` flag. */
+export function resolveMoveWithPowerUps(pos, roll, jumps, effects) {
+  const base = resolveMove(pos, roll, jumps);
+  const fx = effects || {};
+
+  if (fx.shield && base.jumpType === "snake") {
+    return {
+      landing: base.landing,
+      newPos: base.landing,
+      jumpType: null,
+      winner: base.landing === 100,
+      bounced: false,
+      shieldConsumed: true
+    };
+  }
+
+  return {
+    landing: base.landing,
+    newPos: base.newPos,
+    jumpType: base.jumpType,
+    winner: base.winner,
+    bounced: base.bounced,
+    shieldConsumed: false
+  };
+}
+
 /* Validate a set of boards. Throws on the first invalid jump. Pure: the caller
    passes the boards in so this module stays dependency-free. */
 export function validateBoardSet(boards) {

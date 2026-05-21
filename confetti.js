@@ -33,13 +33,16 @@ function resize() {
   if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
-function spawn(x, y, vx, vy, size, life) {
+function spawn(x, y, vx, vy, size, life, opts) {
+  const o = opts || {};
   particles.push({
     x, y, vx, vy, size, life,
     maxLife: life,
     rot: Math.random() * Math.PI,
     vr: (Math.random() - 0.5) * 0.4,
-    color: COLORS[(Math.random() * COLORS.length) | 0]
+    gravity: o.gravity === undefined ? 0.12 : o.gravity,
+    round: !!o.round,
+    color: o.color || COLORS[(Math.random() * COLORS.length) | 0]
   });
 }
 
@@ -52,7 +55,7 @@ function loop() {
 
   for (let i = particles.length - 1; i >= 0; i--) {
     const p = particles[i];
-    p.vy += 0.12;        // gravity
+    p.vy += p.gravity;
     p.vx *= 0.99;
     p.x += p.vx;
     p.y += p.vy;
@@ -66,10 +69,16 @@ function loop() {
 
     ctx.save();
     ctx.translate(p.x, p.y);
-    ctx.rotate(p.rot);
     ctx.globalAlpha = Math.max(0, Math.min(1, p.life / (p.maxLife * 0.5)));
     ctx.fillStyle = p.color;
-    ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size * 0.6);
+    if (p.round) {
+      ctx.beginPath();
+      ctx.arc(0, 0, p.size / 2, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.rotate(p.rot);
+      ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size * 0.6);
+    }
     ctx.restore();
   }
 
@@ -120,6 +129,26 @@ export function sparkle(x, y) {
       Math.sin(angle) * speed - 2,
       3 + Math.random() * 4,
       40 + Math.random() * 25
+    );
+  }
+  start();
+}
+
+/* Short-lived, low-gravity puff that trails a moving token. `color` tints it to
+   the seat colour. Called repeatedly during a hop, so it stays cheap. */
+export function trail(x, y, color) {
+  if (reduceMotion()) return;
+  ensureCanvas();
+  for (let i = 0; i < 3; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 0.4 + Math.random() * 1.1;
+    spawn(
+      x, y,
+      Math.cos(angle) * speed,
+      Math.sin(angle) * speed - 0.6,
+      2 + Math.random() * 3,
+      16 + Math.random() * 12,
+      { gravity: 0.02, round: true, color: color }
     );
   }
   start();

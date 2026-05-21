@@ -1,6 +1,11 @@
 import { boards } from "./boards.js";
 import { supabase, ensureSignedIn, getCurrentUser } from "./supabase.js";
 import { getCellNumber, cellToSVG, resolveMove, validateBoardSet } from "./gameLogic.js";
+import * as localGame from "./localGame.js";
+import * as aiPolicy from "./aiPolicy.js";
+import * as theme from "./theme.js";
+import * as stats from "./stats.js";
+import * as dice3d from "./dice3d.js";
 import * as sfx from "./sound.js";
 import * as haptics from "./haptics.js";
 import * as confetti from "./confetti.js";
@@ -50,6 +55,34 @@ const muteBtn = document.getElementById("muteBtn");
 const p1OnlineEl = document.getElementById("p1Online");
 const p2OnlineEl = document.getElementById("p2Online");
 
+const diceCubeEl = document.getElementById("diceCube");
+const playerStripEl = document.getElementById("playerStrip");
+const localStripEl = document.getElementById("localStrip");
+const turnTimerEl = document.getElementById("turnTimer");
+const turnTimerBarEl = document.getElementById("turnTimerBar");
+const emoteBarEl = document.getElementById("emoteBar");
+const powerTrayEl = document.getElementById("powerTray");
+
+const avatarPickEl = document.getElementById("avatarPick");
+const localPlayBtn = document.getElementById("localPlayBtn");
+const themeBtn = document.getElementById("themeBtn");
+const themeBtnGame = document.getElementById("themeBtnGame");
+const statsBtn = document.getElementById("statsBtn");
+
+const localSetupEl = document.getElementById("localSetup");
+const lsPlayersEl = document.getElementById("lsPlayers");
+const lsSeatsEl = document.getElementById("lsSeats");
+const lsBoardEl = document.getElementById("lsBoard");
+const lsPowerUpsEl = document.getElementById("lsPowerUps");
+const lsTimerEl = document.getElementById("lsTimer");
+const lsStartBtn = document.getElementById("lsStartBtn");
+const lsCancelBtn = document.getElementById("lsCancelBtn");
+
+const statsOverlayEl = document.getElementById("statsOverlay");
+const statsBodyEl = document.getElementById("statsBody");
+const statsCloseBtn = document.getElementById("statsCloseBtn");
+const statsClearBtn = document.getElementById("statsClearBtn");
+
 /* ── State ── */
 
 let currentUser = null;
@@ -59,12 +92,38 @@ let currentGame = null;
 let currentPlayers = [];
 let realtimeChannel = null;
 let toastTimer = null;
-let prevP1Pos = 0;
-let prevP2Pos = 0;
+let prevPositions = {};
 let animateMoves = false;
 let presenceState = {};
 let opponentOnline = false;
 let winCelebrated = false;
+
+/* ── Mode + local game state ── */
+let gameMode = "online"; // "online" | "local"
+let localState = null;
+let armedPowerUp = null;
+let busyAnimating = false;
+let pendingAnims = 0;
+let myAvatar = { color: null, emoji: null };
+let turnTimerHandle = null;
+let diceRolling = false;
+
+const AI_THINK_MS = 850;
+const DEFAULT_SEAT_COLORS = ["#3d8bff", "#ff5fa2", "#18c2a8", "#f5b430"];
+const AVATAR_EMOJIS = ["🐱", "🐶", "🦊", "🐼", "🚀", "⭐"];
+const EMOTES = ["👍", "😂", "😮", "🎉", "😭", "🔥"];
+
+function reducedMotion() {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+function raf() {
+  return new Promise(function (r) { requestAnimationFrame(r); });
+}
+
+function sleep(ms) {
+  return new Promise(function (r) { setTimeout(r, ms); });
+}
 
 const DICE_FACES = ["", "\u2680", "\u2681", "\u2682", "\u2683", "\u2684", "\u2685"];
 
@@ -332,42 +391,29 @@ function errorMessage(error, fallback) {
   return error.message || error.hint || error.details || fallback || "Something went wrong.";
 }
 
-/* Tumble counter — a newer roll cancels any in-flight tumble's pending frames so
-   the dice never settles on a stale value. */
-let diceTumbleId = 0;
+/* Update the displayed dice value: the 3D cube face plus the screen-reader glyph
+   (the glyph also becomes the visible fallback under prefers-reduced-motion). */
+function setDiceFace(value) {
+  diceCharEl.textContent = value ? String(value) : "?";
+  dice3d.setFace(value || 1);
+}
 
-/* Roll the dice through several random faces, decelerating, then settle on the
-   authoritative `value` (the server's last_roll — never a random pick). */
+/* Animate a roll — the 3D cube spins and settles on `value`. Under reduced motion
+   the cube is hidden via CSS and the numeric glyph is shown instead. */
 function animateDice(value) {
-  const face = DICE_FACES[value] || "?";
-  diceTumbleId += 1;
-  const myId = diceTumbleId;
-
   diceEl.classList.remove("rolling");
   void diceEl.offsetWidth;
   diceEl.classList.add("rolling");
+  diceCharEl.textContent = value ? String(value) : "?";
 
-  /* Reduced motion: skip the tumble, show the result immediately. */
-  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-    diceCharEl.textContent = face;
+  if (reducedMotion()) {
+    dice3d.setFace(value || 1);
     return;
   }
-
   sfx.playRoll();
-
-  /* Decelerating cadence: quick at first, easing out before the final settle. */
-  const delays = [55, 60, 70, 85, 105, 130, 160];
-
-  function step(i) {
-    if (myId !== diceTumbleId) return; // superseded by a newer roll
-    if (i >= delays.length) {
-      diceCharEl.textContent = face; // authoritative result
-      return;
-    }
-    diceCharEl.textContent = DICE_FACES[1 + ((Math.random() * 6) | 0)];
-    setTimeout(function () { step(i + 1); }, delays[i]);
-  }
-  step(0);
+  diceRolling = true;
+  dice3d.roll(value || 1);
+  setTimeout(function () { diceRolling = false; }, 700);
 }
 
 /* Quick rattle for immediate feedback while the server resolves the roll; the
@@ -475,17 +521,17 @@ function slideTo(el, targetLeft, targetTop, duration, wobble) {
   });
 }
 
-function hideRealToken(square, color) {
+function hideRealToken(square, idx) {
   const cell = boardEl.querySelector("[data-square='" + square + "']");
   if (!cell) return;
-  const token = cell.querySelector(".token." + color);
+  const token = cell.querySelector(".token.seat-" + idx);
   if (token) token.style.opacity = "0";
 }
 
-function showRealToken(square, color) {
+function showRealToken(square, idx) {
   const cell = boardEl.querySelector("[data-square='" + square + "']");
   if (!cell) return;
-  const token = cell.querySelector(".token." + color);
+  const token = cell.querySelector(".token.seat-" + idx);
   if (token) {
     token.style.opacity = "1";
     /* Re-trigger landing bounce for satisfying arrival */
@@ -495,64 +541,82 @@ function showRealToken(square, color) {
   }
 }
 
-async function animateTokenMove(fromSquare, toSquare, color) {
-  /* [ACCESSIBILITY] Respect reduced-motion preference */
-  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-    showRealToken(toSquare, color);
-    return;
-  }
+/* [SCREEN SHAKE] A short jolt on the board frame, e.g. when a snake bites. */
+function triggerShake() {
+  if (reducedMotion()) return;
+  const frame = boardEl.closest(".board-frame");
+  if (!frame) return;
+  frame.classList.remove("shake");
+  void frame.offsetWidth;
+  frame.classList.add("shake");
+}
 
-  /* Skip animation for winning move (let overlay take focus) */
-  if (currentGame?.winner) {
-    showRealToken(toSquare, color);
-    return;
-  }
+/* [PARTICLE TRAIL] A small puff at the ghost token's current screen position. */
+function emitTrail(ghost, color) {
+  const r = ghost.getBoundingClientRect();
+  confetti.trail(r.left + r.width / 2, r.top + r.height / 2, color);
+}
 
-  /* Clean up any existing ghost from a previous animation */
-  if (activeGhost) {
-    activeGhost.remove();
-    activeGhost = null;
+function makeGhost(frameEl, seat) {
+  const ghost = document.createElement("div");
+  ghost.className = "ghost-token seat-" + seat.idx;
+  ghost.style.setProperty("--tok", seat.color || DEFAULT_SEAT_COLORS[seat.idx - 1]);
+  if (seat.emoji) {
+    ghost.classList.add("token-emoji");
+    ghost.textContent = seat.emoji;
   }
+  frameEl.appendChild(ghost);
+  return ghost;
+}
+
+/* Animate a token from `fromSquare` to `toSquare`. `move` is the resolved move
+   (resolveMove-shaped, optionally { relocate:true } for a power-up swap). */
+async function animateTokenMove(fromSquare, toSquare, seat, move) {
+  const idx = seat.idx;
+
+  if (reducedMotion()) { showRealToken(toSquare, idx); return; }
+  if (currentGame?.winner) { showRealToken(toSquare, idx); return; }
+
+  if (activeGhost) { activeGhost.remove(); activeGhost = null; }
 
   const frameEl = boardEl.closest(".board-frame");
-  if (!frameEl) { showRealToken(toSquare, color); return; }
+  if (!frameEl) { showRealToken(toSquare, idx); return; }
 
-  const board = findBoardById(currentGame?.board_id ?? boards[0].id);
-  const roll = currentGame?.last_roll ?? 0;
-
-  /* Reuse the shared resolver so the animation matches the authoritative move. */
-  const move = resolveMove(fromSquare, roll, board.jumps);
-  const rawLanding = move.landing;
-
-  /* Bounce case: player stays in place, no movement to animate */
-  if (move.bounced) {
-    showRealToken(toSquare, color);
-    return;
-  }
-
-  const hasJump = move.jumpType !== null;
-  const isLadder = move.jumpType === "ladder";
-
-  /* Create ghost token at start position */
-  const ghost = document.createElement("div");
-  ghost.className = "ghost-token " + color;
-  frameEl.appendChild(ghost);
+  const ghost = makeGhost(frameEl, seat);
   activeGhost = ghost;
 
   const startPos = getSquareTokenPos(fromSquare);
   if (!startPos) {
     ghost.remove();
     activeGhost = null;
-    showRealToken(toSquare, color);
+    showRealToken(toSquare, idx);
     return;
   }
-
   ghost.style.left = startPos.left + "px";
   ghost.style.top = startPos.top + "px";
 
-  /* Wait one frame so the initial position renders before animation */
-  await new Promise(function (r) { requestAnimationFrame(r); });
+  await raf();
   if (activeGhost !== ghost) return;
+
+  /* [SWAP] Direct slide to the destination — no tile-by-tile hops. */
+  if (move.relocate) {
+    const tgt = getSquareTokenPos(toSquare);
+    if (tgt) await slideTo(ghost, tgt.left, tgt.top, 460, false);
+    if (activeGhost === ghost) { ghost.remove(); activeGhost = null; }
+    showRealToken(toSquare, idx);
+    return;
+  }
+
+  if (move.bounced) {
+    ghost.remove();
+    activeGhost = null;
+    showRealToken(toSquare, idx);
+    return;
+  }
+
+  const rawLanding = move.landing;
+  const hasJump = move.jumpType !== null;
+  const isLadder = move.jumpType === "ladder";
 
   /* Phase 1: Hop tile-by-tile to the landing square */
   for (let sq = fromSquare + 1; sq <= rawLanding; sq++) {
@@ -560,27 +624,25 @@ async function animateTokenMove(fromSquare, toSquare, color) {
     if (!target || activeGhost !== ghost) break;
     await hopTo(ghost, target.left, target.top, 220);
     sfx.playHop();
+    emitTrail(ghost, seat.color || DEFAULT_SEAT_COLORS[idx - 1]);
   }
 
-  /* A single tap once the hops land (kept off per-hop to avoid buzz spam). */
   if (!hasJump) haptics.land();
 
-  /* Phase 2: [LADDER TRAVERSAL / SNAKE DESCENT] distinct from normal hops */
+  /* Phase 2: [LADDER TRAVERSAL / SNAKE DESCENT] */
   if (hasJump && activeGhost === ghost) {
-    /* Brief pause at the junction for visual clarity */
-    await new Promise(function (r) { setTimeout(r, 80); });
+    await sleep(80);
     if (activeGhost !== ghost) return;
 
     ghost.classList.add(isLadder ? "climb-glow" : "descend-glow");
     if (isLadder) { sfx.playLadder(); haptics.ladder(); }
-    else { sfx.playSnake(); haptics.snake(); }
+    else { sfx.playSnake(); haptics.snake(); triggerShake(); }
 
     const jumpTarget = getSquareTokenPos(toSquare);
     if (jumpTarget) {
       await slideTo(ghost, jumpTarget.left, jumpTarget.top, isLadder ? 420 : 380, !isLadder);
     }
 
-    /* Celebrate a successful climb with a sparkle at the destination cell. */
     if (isLadder) {
       const cell = boardEl.querySelector("[data-square='" + toSquare + "']");
       if (cell) {
@@ -590,15 +652,99 @@ async function animateTokenMove(fromSquare, toSquare, color) {
     }
   }
 
-  /* Remove ghost and reveal real token */
-  if (activeGhost === ghost) {
-    ghost.remove();
-    activeGhost = null;
-  }
-  showRealToken(toSquare, color);
+  if (activeGhost === ghost) { ghost.remove(); activeGhost = null; }
+  showRealToken(toSquare, idx);
 }
 
 /* ═══════════════════ END ANIMATION SYSTEM ═══════════════════ */
+
+/* ── Seats: a unified per-player view both modes render from ── */
+
+function avatarColorFor(role, idx) {
+  if (gameMode === "online" && currentMembership && role === currentMembership.role && myAvatar.color) {
+    return myAvatar.color;
+  }
+  return DEFAULT_SEAT_COLORS[idx - 1];
+}
+
+function avatarEmojiFor(role) {
+  if (gameMode === "online" && currentMembership && role === currentMembership.role) {
+    return myAvatar.emoji || null;
+  }
+  return null;
+}
+
+function getSeats() {
+  if (gameMode === "local" && localState) {
+    return localState.seats.map(function (s) {
+      return {
+        role: s.role,
+        idx: s.idx,
+        position: localState.positions[s.role],
+        color: s.color || DEFAULT_SEAT_COLORS[s.idx - 1],
+        emoji: s.avatar || null,
+        name: s.name,
+        kind: s.kind
+      };
+    });
+  }
+
+  const out = [];
+  const p1 = currentPlayers.find(function (p) { return p.role === "player1"; });
+  out.push({
+    role: "player1", idx: 1,
+    position: currentGame ? (currentGame.player1_position || 0) : 0,
+    color: avatarColorFor("player1", 1), emoji: avatarEmojiFor("player1"),
+    name: p1 ? p1.player_name : "Player 1", kind: "human"
+  });
+  const p2 = currentPlayers.find(function (p) { return p.role === "player2"; });
+  out.push({
+    role: "player2", idx: 2,
+    position: currentGame ? (currentGame.player2_position || 0) : 0,
+    color: avatarColorFor("player2", 2), emoji: avatarEmojiFor("player2"),
+    name: p2 ? p2.player_name : "Waiting…", kind: "human"
+  });
+  return out;
+}
+
+function moveForSeat(seat, fromPos) {
+  if (gameMode === "local" && localState && localState.lastMoves[seat.role]) {
+    return localState.lastMoves[seat.role];
+  }
+  const board = findBoardById(currentGame ? currentGame.board_id : boards[0].id);
+  return resolveMove(fromPos, currentGame ? (currentGame.last_roll || 0) : 0, board.jumps);
+}
+
+function applyDotAvatar(dotEl, seat) {
+  if (!dotEl || !seat) return;
+  dotEl.style.setProperty("--tok", seat.color || DEFAULT_SEAT_COLORS[seat.idx - 1]);
+  if (seat.emoji) {
+    dotEl.classList.add("token-emoji");
+    dotEl.textContent = seat.emoji;
+  } else {
+    dotEl.classList.remove("token-emoji");
+    dotEl.textContent = "";
+  }
+}
+
+function seatName(role) {
+  if (!localState) return role;
+  const s = localState.seats.find(function (x) { return x.role === role; });
+  return s ? s.name : role;
+}
+
+function fireSeatAnimation(fromSquare, toSquare, seat, move) {
+  busyAnimating = true;
+  pendingAnims += 1;
+  animateTokenMove(fromSquare, toSquare, seat, move).finally(function () {
+    pendingAnims -= 1;
+    if (pendingAnims <= 0) {
+      pendingAnims = 0;
+      busyAnimating = false;
+      if (gameMode === "local") afterLocalTurn();
+    }
+  });
+}
 
 /* ── Rendering ── */
 
@@ -607,8 +753,9 @@ function renderBoard() {
 
   const board = findBoardById(currentGame?.board_id ?? boards[0].id);
   const jumps = board.jumps;
-  const p1Pos = currentGame?.player1_position ?? 0;
-  const p2Pos = currentGame?.player2_position ?? 0;
+  const seats = getSeats();
+  const powerTiles = (gameMode === "local" && localState && localState.config.powerUpsEnabled)
+    ? localState.powerTiles : {};
 
   for (let row = 0; row < 10; row++) {
     for (let col = 0; col < 10; col++) {
@@ -627,6 +774,8 @@ function renderBoard() {
       if (dest) {
         cell.classList.add(dest > number ? "has-ladder" : "has-snake");
       }
+
+      if (powerTiles[number]) cell.classList.add("has-power");
 
       const numEl = document.createElement("div");
       numEl.className = "cell-num";
@@ -654,19 +803,27 @@ function renderBoard() {
         cell.appendChild(jl);
       }
 
-      const here = [];
-      if (p1Pos === number) here.push("black");
-      if (p2Pos === number) here.push("white");
+      if (powerTiles[number]) {
+        const star = document.createElement("div");
+        star.className = "power-star";
+        star.textContent = "\u2605";
+        cell.appendChild(star);
+      }
 
+      const here = seats.filter(function (s) { return s.position === number; });
       if (here.length) {
         const wrap = document.createElement("div");
         wrap.className = "tokens";
-        here.forEach(function (color) {
+        here.forEach(function (s) {
           const tk = document.createElement("div");
-          tk.className = "token " + color;
-          if (animateMoves) {
-            if (color === "black" && p1Pos !== prevP1Pos) tk.classList.add("bounce");
-            if (color === "white" && p2Pos !== prevP2Pos) tk.classList.add("bounce");
+          tk.className = "token seat-" + s.idx;
+          tk.style.setProperty("--tok", s.color);
+          if (s.emoji) {
+            tk.classList.add("token-emoji");
+            tk.textContent = s.emoji;
+          }
+          if (animateMoves && (prevPositions[s.role] || 0) !== s.position) {
+            tk.classList.add("bounce");
           }
           wrap.appendChild(tk);
         });
@@ -677,51 +834,96 @@ function renderBoard() {
     }
   }
 
-  prevP1Pos = p1Pos;
-  prevP2Pos = p2Pos;
+  seats.forEach(function (s) { prevPositions[s.role] = s.position; });
   animateMoves = false;
 
   renderOverlay();
 }
 
 function updateUI() {
-  /* ── [PIECE HOP] Capture pre-render positions for animation ── */
+  const seats = getSeats();
   const shouldAnimate = animateMoves;
-  const oldP1 = prevP1Pos;
-  const oldP2 = prevP2Pos;
-  const newP1 = currentGame?.player1_position ?? 0;
-  const newP2 = currentGame?.player2_position ?? 0;
+  const prev = Object.assign({}, prevPositions);
 
   renderBoard();
 
-  /* ── [PIECE HOP] Hide destination tokens during ghost animation ── */
+  /* Hide destination tokens that are about to be animated by a ghost. */
   if (shouldAnimate) {
-    if (oldP1 !== newP1 && oldP1 > 0 && newP1 > 0) hideRealToken(newP1, "black");
-    if (oldP2 !== newP2 && oldP2 > 0 && newP2 > 0) hideRealToken(newP2, "white");
+    seats.forEach(function (s) {
+      const oldPos = prev[s.role] || 0;
+      if (oldPos !== s.position && oldPos > 0 && s.position > 0) hideRealToken(s.position, s.idx);
+    });
   }
 
-  /* Board name */
-  boardNameEl.textContent = currentGame
-    ? findBoardById(currentGame.board_id).name
-    : "\u2014";
+  boardNameEl.textContent = currentGame ? findBoardById(currentGame.board_id).name : "—";
+  roomCodeDisplayEl.textContent = gameMode === "local" ? "LOCAL" : (currentRoom?.code ?? "------");
 
-  /* Room code */
-  roomCodeDisplayEl.textContent = currentRoom?.code ?? "------";
-
-  /* Dice display */
   if (currentGame?.last_roll) {
-    diceCharEl.textContent = DICE_FACES[currentGame.last_roll] || "?";
+    diceCharEl.textContent = String(currentGame.last_roll);
+    if (!diceRolling) dice3d.setFace(currentGame.last_roll);
     lastActionEl.textContent = "Rolled " + currentGame.last_roll;
   }
 
-  /* Player cards */
+  if (gameMode === "local") updateLocalUI(seats);
+  else updateOnlineUI(seats);
+
+  if (shouldAnimate) {
+    seats.forEach(function (s) {
+      const oldPos = prev[s.role] || 0;
+      if (oldPos !== s.position && oldPos > 0 && s.position > 0) {
+        fireSeatAnimation(oldPos, s.position, s, moveForSeat(s, oldPos));
+      }
+    });
+  }
+}
+
+/* Fire win celebration FX once and record the result. */
+function celebrateWinOnce(winnerSeat) {
+  if (winCelebrated) return;
+  winCelebrated = true;
+  clearTurnTimer();
+  confetti.burst();
+  sfx.playWin();
+  haptics.win();
+  recordResult(winnerSeat);
+}
+
+function recordResult(winnerSeat) {
+  const board = currentGame ? findBoardById(currentGame.board_id).name : "—";
+  if (gameMode === "local") {
+    const youRole = localState.seats[0].role;
+    const result = winnerSeat.role === youRole ? "win" : "loss";
+    const opp = localState.seats
+      .filter(function (s) { return s.role !== youRole; })
+      .map(function (s) { return s.name; })
+      .join(", ");
+    stats.recordMatch({ mode: "local", result: result, opponent: opp, board: board });
+  } else {
+    const result = winnerSeat.role === currentMembership?.role ? "win" : "loss";
+    const oppP = currentPlayers.find(function (p) { return p.role !== currentMembership?.role; });
+    stats.recordMatch({ mode: "online", result: result, opponent: oppP ? oppP.player_name : "Opponent", board: board });
+  }
+}
+
+function updateOnlineUI(seats) {
+  playerStripEl.classList.remove("hidden");
+  localStripEl.classList.add("hidden");
+  copyCodeBtn.style.display = "";
+  refreshRoomBtn.style.display = "";
+  emoteBarEl.classList.remove("hidden");
+  powerTrayEl.classList.add("hidden");
+  turnTimerEl.classList.add("hidden");
+
   const p1 = currentPlayers.find(function (p) { return p.role === "player1"; });
   const p2 = currentPlayers.find(function (p) { return p.role === "player2"; });
 
   p1NameEl.textContent = p1?.player_name ?? "Player 1";
-  p2NameEl.textContent = p2?.player_name ?? "Waiting\u2026";
+  p2NameEl.textContent = p2?.player_name ?? "Waiting…";
   p1PosEl.textContent = currentGame ? "Sq " + (currentGame.player1_position || 0) : "Start";
-  p2PosEl.textContent = currentGame && p2 ? "Sq " + (currentGame.player2_position || 0) : "\u2014";
+  p2PosEl.textContent = currentGame && p2 ? "Sq " + (currentGame.player2_position || 0) : "—";
+
+  applyDotAvatar(p1Card.querySelector(".p-dot"), seats[0]);
+  applyDotAvatar(p2Card.querySelector(".p-dot"), seats[1]);
 
   const isMyTurn =
     currentGame &&
@@ -729,11 +931,9 @@ function updateUI() {
     currentPlayers.length === 2 &&
     currentMembership?.role === currentGame.current_turn;
 
-  /* Active card highlight */
   p1Card.classList.toggle("active", currentGame?.current_turn === "player1" && !currentGame?.winner);
   p2Card.classList.toggle("active", currentGame?.current_turn === "player2" && !currentGame?.winner);
 
-  /* Turn banner */
   turnBannerEl.classList.remove("state-go", "state-wait", "state-win");
 
   if (currentGame?.winner) {
@@ -744,57 +944,147 @@ function updateUI() {
       : currentGame.player2_position;
     turnTextEl.textContent = winnerName + " wins!";
     turnBannerEl.classList.add("state-win");
+    winTitleEl.textContent = "Victory!";
     winMessageEl.textContent = winnerPos === 100
       ? winnerName + " reached square 100!"
-      : winnerName + " wins \u2014 opponent left the game.";
+      : winnerName + " wins — opponent left the game.";
     winOverlayEl.classList.remove("hidden");
-
-    /* Fire celebration effects once per win (not on every re-render). */
-    if (!winCelebrated) {
-      winCelebrated = true;
-      confetti.burst();
-      sfx.playWin();
-      haptics.win();
-    }
+    celebrateWinOnce({ role: currentGame.winner, name: winnerName });
   } else {
-    /* No winner: keep the overlay hidden (covers rematch resets). */
     winOverlayEl.classList.add("hidden");
     if (currentPlayers.length < 2) {
-      turnTextEl.textContent = "Waiting for opponent\u2026";
+      turnTextEl.textContent = "Waiting for opponent…";
       turnBannerEl.classList.add("state-wait");
     } else if (isMyTurn) {
-      turnTextEl.textContent = "Your turn \u2014 roll the dice!";
+      turnTextEl.textContent = "Your turn — roll the dice!";
       turnBannerEl.classList.add("state-go");
     } else {
       const opp = currentPlayers.find(function (p) { return p.role === currentGame?.current_turn; });
-      turnTextEl.textContent = "Waiting for " + (opp?.player_name ?? "opponent") + "\u2026";
+      turnTextEl.textContent = "Waiting for " + (opp?.player_name ?? "opponent") + "…";
       turnBannerEl.classList.add("state-wait");
     }
   }
 
-  /* Roll button */
   if (rollDiceBtn) {
     const canRoll = !!isMyTurn;
     rollDiceBtn.disabled = !canRoll;
     rollDiceBtn.classList.toggle("pulse", canRoll);
+    if (currentGame?.winner) rollDiceBtn.textContent = "Game Over";
+    else if (canRoll) rollDiceBtn.textContent = "Roll";
+    else rollDiceBtn.textContent = "Waiting…";
+  }
 
-    if (currentGame?.winner) {
-      rollDiceBtn.textContent = "Game Over";
-    } else if (canRoll) {
-      rollDiceBtn.textContent = "Roll";
+  diceEl.classList.toggle("your-turn", !!isMyTurn);
+}
+
+function updateLocalUI(seats) {
+  playerStripEl.classList.add("hidden");
+  localStripEl.classList.remove("hidden");
+  copyCodeBtn.style.display = "none";
+  refreshRoomBtn.style.display = "none";
+  emoteBarEl.classList.remove("hidden");
+
+  renderLocalStrip(seats);
+
+  const winner = localState.winner;
+  const curRole = localState.current_turn;
+  const curSeat = localState.seats.find(function (s) { return s.role === curRole; });
+  const humanTurn = localGame.isHumanTurn(localState);
+
+  turnBannerEl.classList.remove("state-go", "state-wait", "state-win");
+
+  if (winner) {
+    const ws = localState.seats.find(function (s) { return s.role === winner; });
+    turnTextEl.textContent = ws.name + " wins!";
+    turnBannerEl.classList.add("state-win");
+    winTitleEl.textContent = ws.kind === "cpu" ? "Defeat" : "Victory!";
+    winMessageEl.textContent = ws.name + " reached square 100!";
+    winOverlayEl.classList.remove("hidden");
+    celebrateWinOnce(ws);
+  } else {
+    winOverlayEl.classList.add("hidden");
+    if (humanTurn) {
+      turnTextEl.textContent = seats.length > 2 ? (curSeat.name + " — roll the dice!") : "Your turn — roll the dice!";
+      turnBannerEl.classList.add("state-go");
     } else {
-      rollDiceBtn.textContent = "Waiting\u2026";
+      turnTextEl.textContent = curSeat.name + " is rolling…";
+      turnBannerEl.classList.add("state-wait");
     }
   }
 
-  /* Dice highlight */
-  diceEl.classList.toggle("your-turn", !!isMyTurn);
+  rollDiceBtn.disabled = !humanTurn || !!winner;
+  rollDiceBtn.classList.toggle("pulse", humanTurn && !winner);
+  rollDiceBtn.textContent = winner ? "Game Over" : (humanTurn ? "Roll" : "Waiting…");
+  diceEl.classList.toggle("your-turn", humanTurn && !winner);
 
-  /* ── [PIECE HOP / LADDER / SNAKE TRAVERSAL] Fire movement animations ── */
-  if (shouldAnimate) {
-    if (oldP1 !== newP1 && oldP1 > 0 && newP1 > 0) animateTokenMove(oldP1, newP1, "black");
-    if (oldP2 !== newP2 && oldP2 > 0 && newP2 > 0) animateTokenMove(oldP2, newP2, "white");
+  renderPowerTray();
+}
+
+function renderLocalStrip(seats) {
+  localStripEl.innerHTML = "";
+  seats.forEach(function (s) {
+    const card = document.createElement("div");
+    card.className = "p-card" + (localState.current_turn === s.role && !localState.winner ? " active" : "");
+
+    const dot = document.createElement("div");
+    dot.className = "p-dot";
+    applyDotAvatar(dot, s);
+
+    const info = document.createElement("div");
+    info.className = "p-info";
+    const name = document.createElement("span");
+    name.className = "p-name";
+    name.textContent = s.name + (s.kind === "cpu" ? " (CPU)" : "");
+    const pos = document.createElement("span");
+    pos.className = "p-pos";
+    pos.textContent = s.position > 0 ? "Sq " + s.position : "Start";
+    info.appendChild(name);
+    info.appendChild(pos);
+
+    card.appendChild(dot);
+    card.appendChild(info);
+    localStripEl.appendChild(card);
+  });
+}
+
+function renderPowerTray() {
+  if (!localState || !localState.config.powerUpsEnabled) {
+    powerTrayEl.classList.add("hidden");
+    return;
   }
+  powerTrayEl.classList.remove("hidden");
+  powerTrayEl.innerHTML = "";
+
+  const humanTurn = localGame.isHumanTurn(localState);
+  const role = localState.current_turn;
+  const inv = humanTurn ? (localState.inventory[role] || []) : [];
+
+  if (!humanTurn || !inv.length) {
+    const empty = document.createElement("div");
+    empty.className = "power-tray-empty";
+    empty.textContent = humanTurn ? "No power-ups yet" : "";
+    powerTrayEl.appendChild(empty);
+    return;
+  }
+
+  inv.forEach(function (id) {
+    const meta = localGame.POWER_UPS[id];
+    const chip = document.createElement("button");
+    chip.className = "power-chip" + (armedPowerUp === id ? " armed" : "");
+    chip.title = meta.desc;
+    const icon = document.createElement("span");
+    icon.className = "pc-icon";
+    icon.textContent = meta.icon;
+    const label = document.createElement("span");
+    label.textContent = meta.name;
+    chip.appendChild(icon);
+    chip.appendChild(label);
+    chip.addEventListener("click", function () {
+      armedPowerUp = (armedPowerUp === id) ? null : id;
+      renderPowerTray();
+    });
+    powerTrayEl.appendChild(chip);
+  });
 }
 
 /* ── Room creation ── */
@@ -857,6 +1147,8 @@ async function joinRoom() {
 /* ── Dice roll ── */
 
 async function rollDice() {
+  if (gameMode === "local") { rollLocal(); return; }
+
   if (!currentRoom || !currentGame || !currentMembership) {
     notifyError("Game not ready yet. Try Refresh.");
     return;
@@ -915,6 +1207,8 @@ function describeMove(roll, fromPos, move) {
 /* \u2500\u2500 Rematch / leave / forfeit \u2500\u2500 */
 
 async function requestRematch() {
+  if (gameMode === "local") { restartLocalGame(); return; }
+
   if (!currentRoom) return;
   rematchBtn.disabled = true;
   try {
@@ -923,13 +1217,12 @@ async function requestRematch() {
     const game = Array.isArray(data) ? data[0] : data;
     if (game) {
       currentGame = game;
-      prevP1Pos = 0;
-      prevP2Pos = 0;
+      prevPositions = {};
       animateMoves = false;
       winCelebrated = false;
       confetti.clear();
       winOverlayEl.classList.add("hidden");
-      diceCharEl.textContent = "?";
+      setDiceFace(0);
       lastActionEl.textContent = "Roll to start";
       logMessage("Rematch \u2014 new game on " + findBoardById(game.board_id).name + "!");
       updateUI();
@@ -940,31 +1233,48 @@ async function requestRematch() {
 }
 
 function leaveToLobby() {
+  clearTurnTimer();
   if (realtimeChannel) {
     supabase.removeChannel(realtimeChannel);
     realtimeChannel = null;
   }
+  gameMode = "online";
+  localState = null;
+  armedPowerUp = null;
   currentRoom = null;
   currentMembership = null;
   currentGame = null;
   currentPlayers = [];
-  prevP1Pos = 0;
-  prevP2Pos = 0;
+  prevPositions = {};
   animateMoves = false;
   winCelebrated = false;
   confetti.clear();
   presenceState = {};
-  diceCharEl.textContent = "?";
+  setDiceFace(0);
   lastActionEl.textContent = "Roll to start";
   rollDiceBtn.textContent = "Roll";
   logEl.innerHTML = "";
   winOverlayEl.classList.add("hidden");
   gameScreenEl.classList.add("hidden");
+  playerStripEl.classList.remove("hidden");
+  localStripEl.classList.add("hidden");
+  powerTrayEl.classList.add("hidden");
+  copyCodeBtn.style.display = "";
+  refreshRoomBtn.style.display = "";
   lobbyEl.classList.remove("hidden");
 }
 
-/* Leaving an in-progress game forfeits it (the opponent wins). */
+/* Leaving an in-progress game forfeits it (online: the opponent wins). */
 async function leaveRoom() {
+  if (gameMode === "local") {
+    if (localState && !localState.winner) {
+      const ok = window.confirm("Leave the game?");
+      if (!ok) return;
+    }
+    leaveToLobby();
+    return;
+  }
+
   const inProgress = currentGame && !currentGame.winner && currentPlayers.length >= 2;
   if (inProgress) {
     const ok = window.confirm("Leave the game? Your opponent will be awarded the win.");
@@ -973,6 +1283,450 @@ async function leaveRoom() {
     if (error) notifyError(errorMessage(error, "Could not leave cleanly."));
   }
   leaveToLobby();
+}
+
+/* ══════════════════ LOCAL MODE (offline / vs CPU / hot-seat) ══════════════════ */
+
+function syncFromLocal() {
+  currentGame = localGame.toGameRow(localState);
+}
+
+function rollLocal() {
+  if (!localState || !localGame.isHumanTurn(localState) || busyAnimating) return;
+  const roll = 1 + Math.floor(Math.random() * 6);
+  applyLocalRoll(roll, armedPowerUp);
+}
+
+function applyLocalRoll(roll, chosen) {
+  clearTurnTimer();
+  rollDiceBtn.disabled = true;
+  rollDiceBtn.classList.remove("pulse");
+  shakeDice();
+  haptics.roll();
+
+  const result = localGame.stepRoll(localState, roll, chosen, Math.random);
+  localState = result.state;
+  armedPowerUp = null;
+
+  describeLocalEvents(result.events);
+  animateDice(localState.last_roll);
+  syncFromLocal();
+  animateMoves = true;
+  updateUI();
+
+  if (!busyAnimating) afterLocalTurn();
+}
+
+function describeLocalEvents(events) {
+  events.forEach(function (e) {
+    if (e.type === "powerup") {
+      sfx.playPowerUse();
+      if (e.id === "doubleRoll") {
+        logMessage(seatName(e.role) + " used Double Roll: " + e.rolls[0] + " + " + e.rolls[1] + " = " + e.total + ".");
+        showToast("Double Roll — moved " + e.total + "!");
+      } else if (e.id === "shield") {
+        logMessage(seatName(e.role) + " armed a Shield.");
+      } else if (e.id === "swap") {
+        logMessage(seatName(e.role) + " used Swap.");
+      }
+    } else if (e.type === "shieldBlock") {
+      showToast("Shield blocked the snake!");
+      logMessage("Shield blocked a snake at " + e.at + ".");
+    } else if (e.type === "acquire") {
+      sfx.playPowerGain();
+      const meta = localGame.POWER_UPS[e.id];
+      logMessage(seatName(e.role) + " picked up " + (meta ? meta.name : e.id) + "!");
+      showToast("Power-up: " + (meta ? meta.name : e.id));
+    } else if (e.type === "move") {
+      let msg;
+      if (e.jumpType === "ladder") msg = seatName(e.role) + " climbed " + e.landing + " → " + e.to + "!";
+      else if (e.jumpType === "snake") msg = seatName(e.role) + " hit a snake " + e.landing + " → " + e.to + ".";
+      else msg = seatName(e.role) + " moved to " + e.to + ".";
+      logMessage(msg);
+    } else if (e.type === "bounce") {
+      logMessage(seatName(e.role) + " rolled " + e.roll + " — needs exact, stays put.");
+    } else if (e.type === "swap") {
+      showToast(seatName(e.role) + " swapped with " + seatName(e.with) + "!");
+    } else if (e.type === "win") {
+      logMessage(seatName(e.role) + " reached square 100!");
+    }
+  });
+}
+
+function afterLocalTurn() {
+  if (gameMode !== "local" || !localState) return;
+  if (localState.winner) return;
+  startTurnTimer();
+  scheduleAIIfNeeded();
+}
+
+function scheduleAIIfNeeded() {
+  if (gameMode !== "local" || !localState || localState.winner) return;
+  const seat = localState.seats.find(function (s) { return s.role === localState.current_turn; });
+  if (!seat || seat.kind !== "cpu") return;
+  clearTurnTimer();
+  const role = seat.role;
+  setTimeout(function () {
+    if (gameMode !== "local" || !localState || localState.winner) return;
+    if (localState.current_turn !== role || busyAnimating) return;
+    const chosen = aiPolicy.choosePowerUp(localState, role, seat.difficulty);
+    const roll = 1 + Math.floor(Math.random() * 6);
+    applyLocalRoll(roll, chosen);
+  }, AI_THINK_MS);
+}
+
+function clearTurnTimer() {
+  if (turnTimerHandle) {
+    cancelAnimationFrame(turnTimerHandle);
+    turnTimerHandle = null;
+  }
+  turnTimerEl.classList.add("hidden");
+}
+
+function startTurnTimer() {
+  clearTurnTimer();
+  if (gameMode !== "local" || !localState || localState.winner) return;
+  const secs = localState.config.turnTimer;
+  if (!secs || !localGame.isHumanTurn(localState)) return;
+
+  const role = localState.current_turn;
+  const end = performance.now() + secs * 1000;
+  turnTimerEl.classList.remove("hidden");
+  turnTimerBarEl.style.transition = "none";
+
+  function tick() {
+    if (gameMode !== "local" || !localState || localState.winner || localState.current_turn !== role) {
+      clearTurnTimer();
+      return;
+    }
+    const remain = end - performance.now();
+    const frac = Math.max(0, remain / (secs * 1000));
+    turnTimerBarEl.style.transform = "scaleX(" + frac + ")";
+    turnTimerBarEl.classList.toggle("low", frac < 0.33);
+    if (remain <= 0) {
+      clearTurnTimer();
+      rollLocal();
+      return;
+    }
+    turnTimerHandle = requestAnimationFrame(tick);
+  }
+  turnTimerHandle = requestAnimationFrame(tick);
+}
+
+function defaultSeatName(i) {
+  if (i === 0) return "You";
+  if (i === 1) return "Computer";
+  return "Player " + (i + 1);
+}
+
+function buildSeatRows() {
+  const count = parseInt(lsPlayersEl.value, 10) || 2;
+  lsSeatsEl.innerHTML = "";
+  for (let i = 0; i < count; i++) {
+    const row = document.createElement("div");
+    row.className = "ls-seat";
+
+    const name = document.createElement("input");
+    name.type = "text";
+    name.maxLength = 16;
+    name.className = "ls-name";
+    name.dataset.seat = String(i);
+    name.value = i === 0 ? (playerNameInput.value.trim() || "You") : defaultSeatName(i);
+    row.appendChild(name);
+
+    if (i === 0) {
+      const tag = document.createElement("span");
+      tag.className = "ls-you";
+      tag.textContent = "(you)";
+      row.appendChild(tag);
+    } else {
+      const kind = document.createElement("select");
+      kind.className = "ls-kind";
+      kind.dataset.seat = String(i);
+      kind.innerHTML = '<option value="cpu">CPU</option><option value="human">Human</option>';
+      const diff = document.createElement("select");
+      diff.className = "ls-diff";
+      diff.dataset.seat = String(i);
+      diff.innerHTML = '<option value="easy">Easy</option><option value="medium" selected>Medium</option><option value="hard">Hard</option>';
+      kind.addEventListener("change", function () {
+        diff.style.display = kind.value === "cpu" ? "" : "none";
+      });
+      row.appendChild(kind);
+      row.appendChild(diff);
+    }
+    lsSeatsEl.appendChild(row);
+  }
+}
+
+function populateBoardSelect() {
+  lsBoardEl.innerHTML = '<option value="random">Random</option>';
+  boards.forEach(function (b) {
+    const opt = document.createElement("option");
+    opt.value = b.id;
+    opt.textContent = b.name;
+    lsBoardEl.appendChild(opt);
+  });
+}
+
+function openLocalSetup() {
+  populateBoardSelect();
+  buildSeatRows();
+  localSetupEl.classList.remove("hidden");
+}
+
+function readSeatConfig() {
+  const count = parseInt(lsPlayersEl.value, 10) || 2;
+  const seats = [];
+  for (let i = 0; i < count; i++) {
+    const nameEl = lsSeatsEl.querySelector('.ls-name[data-seat="' + i + '"]');
+    const name = (nameEl && nameEl.value.trim()) || defaultSeatName(i);
+    if (i === 0) {
+      seats.push({ name: name, kind: "human", color: myAvatar.color || undefined, avatar: myAvatar.emoji || undefined });
+    } else {
+      const kindEl = lsSeatsEl.querySelector('.ls-kind[data-seat="' + i + '"]');
+      const diffEl = lsSeatsEl.querySelector('.ls-diff[data-seat="' + i + '"]');
+      seats.push({ name: name, kind: kindEl ? kindEl.value : "cpu", difficulty: diffEl ? diffEl.value : "medium" });
+    }
+  }
+  return seats;
+}
+
+function startLocalGame() {
+  const seats = readSeatConfig();
+  let boardId = lsBoardEl.value;
+  if (boardId === "random") boardId = boards[(Math.random() * boards.length) | 0].id;
+  const board = findBoardById(boardId);
+
+  gameMode = "local";
+  localState = localGame.createLocalGame({
+    boardId: boardId,
+    jumps: board.jumps,
+    seats: seats,
+    powerUpsEnabled: lsPowerUpsEl.checked,
+    turnTimer: parseInt(lsTimerEl.value, 10) || 0,
+    rng: Math.random
+  });
+
+  armedPowerUp = null;
+  prevPositions = {};
+  localState.seats.forEach(function (s) { prevPositions[s.role] = 0; });
+  animateMoves = false;
+  winCelebrated = false;
+  confetti.clear();
+  setDiceFace(0);
+  lastActionEl.textContent = "Roll to start";
+  logEl.innerHTML = "";
+  winOverlayEl.classList.add("hidden");
+
+  syncFromLocal();
+  localSetupEl.classList.add("hidden");
+  showGameScreen();
+  logMessage("Local game started on " + board.name + ".");
+  updateUI();
+  startTurnTimer();
+  scheduleAIIfNeeded();
+}
+
+function restartLocalGame() {
+  if (!localState) return;
+  const board = findBoardById(localState.board_id);
+  localState = localGame.createLocalGame({
+    boardId: localState.board_id,
+    jumps: localState.jumps,
+    seats: localState.seats.map(function (s) {
+      return { name: s.name, kind: s.kind, difficulty: s.difficulty, color: s.color, avatar: s.avatar };
+    }),
+    powerUpsEnabled: localState.config.powerUpsEnabled,
+    turnTimer: localState.config.turnTimer,
+    rng: Math.random
+  });
+
+  armedPowerUp = null;
+  prevPositions = {};
+  localState.seats.forEach(function (s) { prevPositions[s.role] = 0; });
+  animateMoves = false;
+  winCelebrated = false;
+  confetti.clear();
+  setDiceFace(0);
+  lastActionEl.textContent = "Roll to start";
+  winOverlayEl.classList.add("hidden");
+  logMessage("New game on " + board.name + "!");
+
+  syncFromLocal();
+  updateUI();
+  startTurnTimer();
+  scheduleAIIfNeeded();
+}
+
+/* ── Emotes / reactions ── */
+
+function buildEmoteBar() {
+  emoteBarEl.innerHTML = "";
+  EMOTES.forEach(function (emoji) {
+    const btn = document.createElement("button");
+    btn.className = "emote-btn";
+    btn.type = "button";
+    btn.textContent = emoji;
+    btn.setAttribute("aria-label", "Send " + emoji);
+    btn.addEventListener("click", function () { sendEmote(emoji); });
+    emoteBarEl.appendChild(btn);
+  });
+}
+
+function sendEmote(emoji) {
+  if (gameMode === "local") {
+    showEmote(localState ? localState.current_turn : "player1", emoji);
+    return;
+  }
+  const myRole = currentMembership?.role;
+  if (myRole) showEmote(myRole, emoji);
+  if (realtimeChannel) {
+    realtimeChannel.send({ type: "broadcast", event: "emote", payload: { role: myRole, emoji: emoji } });
+  }
+}
+
+function showEmote(role, emoji) {
+  let cardEl = null;
+  if (gameMode === "local") {
+    const idx = localState ? localState.seats.findIndex(function (s) { return s.role === role; }) : -1;
+    cardEl = idx >= 0 ? localStripEl.children[idx] : null;
+  } else {
+    cardEl = role === "player1" ? p1Card : (role === "player2" ? p2Card : null);
+  }
+  if (!cardEl) return;
+  const r = cardEl.getBoundingClientRect();
+  const bubble = document.createElement("div");
+  bubble.className = "emote-bubble";
+  bubble.textContent = emoji;
+  bubble.style.left = (r.left + r.width / 2 - 14) + "px";
+  bubble.style.top = (r.top - 6) + "px";
+  document.body.appendChild(bubble);
+  setTimeout(function () { bubble.remove(); }, 1700);
+}
+
+/* ── Avatar picker ── */
+
+function loadAvatar() {
+  try {
+    const raw = localStorage.getItem("snl_avatar");
+    if (raw) myAvatar = JSON.parse(raw);
+  } catch {
+    myAvatar = { color: null, emoji: null };
+  }
+}
+
+function saveAvatar() {
+  try {
+    localStorage.setItem("snl_avatar", JSON.stringify(myAvatar));
+  } catch {
+    /* private mode — keep in memory */
+  }
+}
+
+function buildAvatarPicker() {
+  avatarPickEl.innerHTML = "";
+
+  DEFAULT_SEAT_COLORS.forEach(function (color) {
+    const opt = document.createElement("button");
+    opt.type = "button";
+    opt.className = "avatar-opt swatch";
+    opt.style.setProperty("--tok", color);
+    opt.dataset.color = color;
+    if (myAvatar.color === color && !myAvatar.emoji) opt.classList.add("selected");
+    opt.addEventListener("click", function () {
+      myAvatar = { color: color, emoji: null };
+      saveAvatar();
+      refreshAvatarSelection();
+    });
+    avatarPickEl.appendChild(opt);
+  });
+
+  AVATAR_EMOJIS.forEach(function (emoji) {
+    const opt = document.createElement("button");
+    opt.type = "button";
+    opt.className = "avatar-opt";
+    opt.textContent = emoji;
+    opt.dataset.emoji = emoji;
+    if (myAvatar.emoji === emoji) opt.classList.add("selected");
+    opt.addEventListener("click", function () {
+      myAvatar = { color: myAvatar.color || DEFAULT_SEAT_COLORS[0], emoji: emoji };
+      saveAvatar();
+      refreshAvatarSelection();
+    });
+    avatarPickEl.appendChild(opt);
+  });
+}
+
+function refreshAvatarSelection() {
+  Array.prototype.forEach.call(avatarPickEl.children, function (el) {
+    const isColor = el.dataset.color && !myAvatar.emoji && myAvatar.color === el.dataset.color;
+    const isEmoji = el.dataset.emoji && myAvatar.emoji === el.dataset.emoji;
+    el.classList.toggle("selected", !!(isColor || isEmoji));
+  });
+}
+
+/* ── Theme ── */
+
+function updateThemeButtons() {
+  const t = theme.getTheme();
+  const meta = theme.THEMES.find(function (x) { return x.id === t; });
+  if (themeBtn) themeBtn.textContent = "Theme: " + (meta ? meta.name : t);
+}
+
+function cycleTheme() {
+  theme.applyTheme(theme.nextTheme(theme.getTheme()));
+  updateThemeButtons();
+}
+
+/* ── Stats overlay ── */
+
+function openStats() {
+  const s = stats.getStats();
+  statsBodyEl.innerHTML = "";
+
+  const grid = document.createElement("div");
+  grid.className = "stats-grid";
+  [
+    ["Played", s.played],
+    ["Won", s.won],
+    ["Win rate", s.winRate + "%"],
+    ["Streak", (s.streak > 0 ? "+" : "") + s.streak]
+  ].forEach(function (pair) {
+    const cell = document.createElement("div");
+    cell.className = "stat-cell";
+    const num = document.createElement("div");
+    num.className = "stat-num";
+    num.textContent = pair[1];
+    const lbl = document.createElement("div");
+    lbl.className = "stat-lbl";
+    lbl.textContent = pair[0];
+    cell.appendChild(num);
+    cell.appendChild(lbl);
+    grid.appendChild(cell);
+  });
+  statsBodyEl.appendChild(grid);
+
+  const recent = document.createElement("div");
+  recent.className = "stats-recent";
+  if (!s.recent.length) {
+    recent.textContent = "No games played yet.";
+  } else {
+    s.recent.forEach(function (m) {
+      const row = document.createElement("div");
+      row.className = "stats-recent-row";
+      const left = document.createElement("span");
+      left.textContent = (m.mode === "local" ? "vs " : "online vs ") + m.opponent;
+      const right = document.createElement("span");
+      right.className = m.result === "win" ? "res-win" : "res-loss";
+      right.textContent = m.result === "win" ? "Win" : "Loss";
+      row.appendChild(left);
+      row.appendChild(right);
+      recent.appendChild(row);
+    });
+  }
+  statsBodyEl.appendChild(recent);
+
+  statsOverlayEl.classList.remove("hidden");
 }
 
 /* ── Realtime subscriptions ── */
@@ -1018,6 +1772,12 @@ function subscribeToRoom(roomId) {
       }
     )
     .on("presence", { event: "sync" }, handlePresenceSync)
+    .on("broadcast", { event: "emote" }, function (payload) {
+      const data = payload && payload.payload ? payload.payload : null;
+      if (data && data.role && data.role !== currentMembership?.role) {
+        showEmote(data.role, data.emoji);
+      }
+    })
     .subscribe(function (status) {
       if (status === "SUBSCRIBED") {
         logMessage("Realtime connected.");
@@ -1053,12 +1813,11 @@ function handleGameChange(payload) {
   currentGame = incoming;
 
   if (isRematch) {
-    prevP1Pos = 0;
-    prevP2Pos = 0;
+    prevPositions = {};
     animateMoves = false;
     winCelebrated = false;
     confetti.clear();
-    diceCharEl.textContent = "?";
+    setDiceFace(0);
     lastActionEl.textContent = "Roll to start";
     winOverlayEl.classList.add("hidden");
     logMessage("Rematch — new game on " + findBoardById(incoming.board_id).name + "!");
@@ -1139,8 +1898,10 @@ async function loadRoomState(roomCode) {
     currentMembership;
 
   /* Sync positions so tokens don't bounce on load/rejoin */
-  prevP1Pos = currentGame?.player1_position ?? 0;
-  prevP2Pos = currentGame?.player2_position ?? 0;
+  prevPositions = {
+    player1: currentGame?.player1_position ?? 0,
+    player2: currentGame?.player2_position ?? 0
+  };
 
   /* If the game is already won on load (rejoin/refresh), don't replay the
      celebration — treat it as already shown. */
@@ -1158,6 +1919,15 @@ async function loadRoomState(roomCode) {
 /* ── Boot ── */
 
 async function boot() {
+  /* Visual layer first, so offline / local play works even if Supabase is down. */
+  theme.initTheme();
+  updateThemeButtons();
+  dice3d.mount(diceCubeEl);
+  setDiceFace(0);
+  loadAvatar();
+  buildAvatarPicker();
+  buildEmoteBar();
+
   try {
     validateBoardSet(boards);
     await ensureSignedIn();
@@ -1243,6 +2013,33 @@ leaveBtn.addEventListener("click", function () {
 
 leaveRoomBtn.addEventListener("click", async function () {
   try { await leaveRoom(); } catch (e) { console.error(e); notifyError(e.message); leaveToLobby(); }
+});
+
+/* ── Local mode, theme, stats controls ── */
+
+localPlayBtn.addEventListener("click", function () {
+  sfx.unlock();
+  openLocalSetup();
+});
+
+lsPlayersEl.addEventListener("change", buildSeatRows);
+lsStartBtn.addEventListener("click", function () {
+  try { startLocalGame(); } catch (e) { console.error(e); notifyError(e.message); }
+});
+lsCancelBtn.addEventListener("click", function () {
+  localSetupEl.classList.add("hidden");
+});
+
+themeBtn.addEventListener("click", cycleTheme);
+themeBtnGame.addEventListener("click", cycleTheme);
+
+statsBtn.addEventListener("click", openStats);
+statsCloseBtn.addEventListener("click", function () {
+  statsOverlayEl.classList.add("hidden");
+});
+statsClearBtn.addEventListener("click", function () {
+  stats.clearStats();
+  openStats();
 });
 
 boot();

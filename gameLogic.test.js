@@ -5,6 +5,7 @@ import {
   isHorizontalJump,
   cellToSVG,
   resolveMove,
+  resolveMoveWithPowerUps,
   validateBoardSet
 } from "./gameLogic.js";
 import { boards } from "./boards.js";
@@ -88,6 +89,36 @@ describe("resolveMove", () => {
   it("accepts numeric keys against string-keyed jump maps (object literal keys are strings)", () => {
     const literal = { 4: 14 };
     expect(resolveMove(1, 3, literal).newPos).toBe(14);
+  });
+});
+
+describe("resolveMoveWithPowerUps", () => {
+  const jumps = { 4: 14, 16: 6, 99: 21 }; // ladder, snake, snake
+
+  it("negates a snake when shielded (stays on the landing square)", () => {
+    const move = resolveMoveWithPowerUps(13, 3, jumps, { shield: true });
+    expect(move.newPos).toBe(16);
+    expect(move.jumpType).toBe(null);
+    expect(move.shieldConsumed).toBe(true);
+  });
+
+  it("is a no-op when there is no snake to block", () => {
+    const move = resolveMoveWithPowerUps(10, 3, jumps, { shield: true });
+    expect(move.newPos).toBe(13);
+    expect(move.shieldConsumed).toBe(false);
+  });
+
+  it("still climbs ladders normally with a shield held", () => {
+    const move = resolveMoveWithPowerUps(1, 3, jumps, { shield: true });
+    expect(move.newPos).toBe(14);
+    expect(move.jumpType).toBe("ladder");
+  });
+
+  it("is shape-compatible with resolveMove when no effects apply", () => {
+    const move = resolveMoveWithPowerUps(10, 3, jumps, {});
+    expect(move).toEqual({
+      landing: 13, newPos: 13, jumpType: null, winner: false, bounced: false, shieldConsumed: false
+    });
   });
 });
 
