@@ -1,5 +1,6 @@
 import { boards } from "./boards.js";
 import { supabase, ensureSignedIn, getCurrentUser } from "./supabase.js";
+import { getCellNumber, cellToSVG, resolveMove, validateBoardSet } from "./gameLogic.js";
 
 /* ── DOM refs ── */
 
@@ -38,8 +39,12 @@ const toastTextEl = document.getElementById("toastText");
 const winOverlayEl = document.getElementById("winOverlay");
 const winTitleEl = document.getElementById("winTitle");
 const winMessageEl = document.getElementById("winMessage");
-const newGameBtn = document.getElementById("newGameBtn");
+const rematchBtn = document.getElementById("rematchBtn");
+const leaveBtn = document.getElementById("leaveBtn");
 const copyCodeBtn = document.getElementById("copyCodeBtn");
+const leaveRoomBtn = document.getElementById("leaveRoomBtn");
+const p1OnlineEl = document.getElementById("p1Online");
+const p2OnlineEl = document.getElementById("p2Online");
 
 /* ── State ── */
 
@@ -53,53 +58,16 @@ let toastTimer = null;
 let prevP1Pos = 0;
 let prevP2Pos = 0;
 let animateMoves = false;
+let presenceState = {};
+let opponentOnline = false;
 
 const DICE_FACES = ["", "\u2680", "\u2681", "\u2682", "\u2683", "\u2684", "\u2685"];
 
-/* ── Board helpers ── */
-
-function getCellNumber(rowFromTop, col) {
-  const rowFromBottom = 9 - rowFromTop;
-  const rowStart = rowFromBottom * 10 + 1;
-  return rowFromBottom % 2 === 0 ? rowStart + col : rowStart + (9 - col);
-}
-
-function getBoardPosition(square) {
-  const zeroBased = square - 1;
-  const rowFromBottom = Math.floor(zeroBased / 10);
-  const colInRow = zeroBased % 10;
-  const col = rowFromBottom % 2 === 0 ? colInRow : 9 - colInRow;
-  return { rowFromBottom, col };
-}
-
-function isHorizontalJump(from, to) {
-  return getBoardPosition(from).rowFromBottom === getBoardPosition(to).rowFromBottom;
-}
-
-function validateBoardSet() {
-  for (const board of boards) {
-    for (const [fromRaw, to] of Object.entries(board.jumps)) {
-      const from = Number(fromRaw);
-      if (from < 1 || from > 100 || to < 1 || to > 100) {
-        throw new Error("Board " + board.id + ": jump out of range " + from + " -> " + to);
-      }
-      if (from === to) {
-        throw new Error("Board " + board.id + ": self jump " + from + " -> " + to);
-      }
-      if (isHorizontalJump(from, to)) {
-        throw new Error("Board " + board.id + ": horizontal jump " + from + " -> " + to + " is not allowed");
-      }
-    }
-  }
-}
+/* Board geometry (getCellNumber, cellToSVG), jump resolution (resolveMove), and
+   validation (validateBoardSet) live in gameLogic.js — imported above — so they
+   are unit-tested and mirror the server-side roll_dice() RPC. */
 
 /* ── SVG overlay ── */
-
-function cellToSVG(square) {
-  const pos = getBoardPosition(square);
-  const rowFromTop = 9 - pos.rowFromBottom;
-  return { x: (pos.col + 0.5) * 10, y: (rowFromTop + 0.5) * 10 };
-}
 
 /* ── [SNAKE VISUALS] Enhanced SVG snake with layered texture and depth ── */
 
@@ -289,31 +257,8 @@ function logMessage(message) {
   logEl.prepend(entry);
 }
 
-function cryptoRandomInt(min, max) {
-  const range = max - min + 1;
-  const maxUint32 = 0x100000000;
-  const limit = maxUint32 - (maxUint32 % range);
-  const buffer = new Uint32Array(1);
-  let value;
-  do {
-    crypto.getRandomValues(buffer);
-    value = buffer[0];
-  } while (value >= limit);
-  return min + (value % range);
-}
-
-function randomBoard() {
-  return boards[cryptoRandomInt(0, boards.length - 1)];
-}
-
-function generateRoomCode(length = 6) {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let code = "";
-  for (let i = 0; i < length; i += 1) {
-    code += chars[cryptoRandomInt(0, chars.length - 1)];
-  }
-  return code;
-}
+/* Dice rolls, room codes, and board selection are generated server-side
+   (roll_dice / create_room RPCs), so no client-side RNG is needed. */
 
 function findBoardById(boardId) {
   return boards.find(function (b) { return b.id === boardId; }) ?? boards[0];
@@ -341,8 +286,37 @@ function showToast(msg) {
   }, 3500);
 }
 
+/* Non-blocking error feedback. In the lobby there is no toast, so surface the
+   message on the status line; in-game use the toast. */
+function showLobbyError(msg) {
+  authStatusEl.textContent = msg;
+  authStatusEl.classList.add("error");
+}
+
+function notifyError(msg) {
+  if (!gameScreenEl.classList.contains("hidden")) {
+    showToast(msg);
+  } else {
+    showLobbyError(msg);
+  }
+}
+
+/* Pull a human-readable message out of a Supabase/PostgREST error. RAISE
+   EXCEPTION text from the RPCs (e.g. "Not your turn") arrives in .message. */
+function errorMessage(error, fallback) {
+  if (!error) return fallback || "Something went wrong.";
+  return error.message || error.hint || error.details || fallback || "Something went wrong.";
+}
+
 function animateDice(value) {
   diceCharEl.textContent = DICE_FACES[value] || "?";
+  diceEl.classList.remove("rolling");
+  void diceEl.offsetWidth;
+  diceEl.classList.add("rolling");
+}
+
+/* Shake the dice for immediate feedback while the server resolves the roll. */
+function shakeDice() {
   diceEl.classList.remove("rolling");
   void diceEl.offsetWidth;
   diceEl.classList.add("rolling");
@@ -479,17 +453,19 @@ async function animateTokenMove(fromSquare, toSquare, color) {
 
   const board = findBoardById(currentGame?.board_id ?? boards[0].id);
   const roll = currentGame?.last_roll ?? 0;
-  let rawLanding = fromSquare + roll;
+
+  /* Reuse the shared resolver so the animation matches the authoritative move. */
+  const move = resolveMove(fromSquare, roll, board.jumps);
+  const rawLanding = move.landing;
 
   /* Bounce case: player stays in place, no movement to animate */
-  if (rawLanding > 100) {
+  if (move.bounced) {
     showRealToken(toSquare, color);
     return;
   }
 
-  const jumpDest = board.jumps[rawLanding];
-  const hasJump = jumpDest !== undefined;
-  const isLadder = hasJump && jumpDest > rawLanding;
+  const hasJump = move.jumpType !== null;
+  const isLadder = move.jumpType === "ladder";
 
   /* Create ghost token at start position */
   const ghost = document.createElement("div");
@@ -680,20 +656,30 @@ function updateUI() {
 
   if (currentGame?.winner) {
     const wp = currentPlayers.find(function (p) { return p.role === currentGame.winner; });
-    turnTextEl.textContent = (wp?.player_name ?? currentGame.winner) + " wins!";
+    const winnerName = wp?.player_name ?? currentGame.winner;
+    const winnerPos = currentGame.winner === "player1"
+      ? currentGame.player1_position
+      : currentGame.player2_position;
+    turnTextEl.textContent = winnerName + " wins!";
     turnBannerEl.classList.add("state-win");
-    winMessageEl.textContent = (wp?.player_name ?? currentGame.winner) + " reached square 100!";
+    winMessageEl.textContent = winnerPos === 100
+      ? winnerName + " reached square 100!"
+      : winnerName + " wins \u2014 opponent left the game.";
     winOverlayEl.classList.remove("hidden");
-  } else if (currentPlayers.length < 2) {
-    turnTextEl.textContent = "Waiting for opponent\u2026";
-    turnBannerEl.classList.add("state-wait");
-  } else if (isMyTurn) {
-    turnTextEl.textContent = "Your turn \u2014 roll the dice!";
-    turnBannerEl.classList.add("state-go");
   } else {
-    const opp = currentPlayers.find(function (p) { return p.role === currentGame?.current_turn; });
-    turnTextEl.textContent = "Waiting for " + (opp?.player_name ?? "opponent") + "\u2026";
-    turnBannerEl.classList.add("state-wait");
+    /* No winner: keep the overlay hidden (covers rematch resets). */
+    winOverlayEl.classList.add("hidden");
+    if (currentPlayers.length < 2) {
+      turnTextEl.textContent = "Waiting for opponent\u2026";
+      turnBannerEl.classList.add("state-wait");
+    } else if (isMyTurn) {
+      turnTextEl.textContent = "Your turn \u2014 roll the dice!";
+      turnBannerEl.classList.add("state-go");
+    } else {
+      const opp = currentPlayers.find(function (p) { return p.role === currentGame?.current_turn; });
+      turnTextEl.textContent = "Waiting for " + (opp?.player_name ?? "opponent") + "\u2026";
+      turnBannerEl.classList.add("state-wait");
+    }
   }
 
   /* Roll button */
@@ -723,91 +709,26 @@ function updateUI() {
 
 /* ── Room creation ── */
 
-async function createUniqueRoomCode() {
-  for (let i = 0; i < 10; i += 1) {
-    const code = generateRoomCode();
-    const { data, error } = await supabase
-      .from("rooms")
-      .select("id")
-      .eq("code", code)
-      .maybeSingle();
-    if (error) throw new Error("Room code check failed: " + error.message);
-    if (!data) return code;
-  }
-  throw new Error("Could not generate a unique room code.");
-}
-
 async function createRoom() {
   const playerName = playerNameInput.value.trim();
-  if (!playerName) { alert("Enter a player name first."); return; }
-  if (!currentUser?.id) throw new Error("No authenticated user found.");
+  if (!playerName) { notifyError("Enter a player name first."); return; }
+  if (!currentUser?.id) { notifyError("Still connecting — try again in a moment."); return; }
 
   setButtonsDisabled(true);
-
   try {
-    const code = await createUniqueRoomCode();
-    const board = randomBoard();
-    const roomId = crypto.randomUUID();
-    const membershipId = crypto.randomUUID();
+    /* Atomic server-side create: room + player1 + game, unique code, random board. */
+    const { data, error } = await supabase.rpc("create_room", { p_player_name: playerName });
+    if (error) { notifyError(errorMessage(error, "Could not create a room.")); return; }
 
-    const roomPayload = {
-      id: roomId,
-      code: code,
-      created_by: currentUser.id,
-      status: "waiting"
-    };
+    const row = Array.isArray(data) ? data[0] : data;
+    if (!row?.room_code) { notifyError("Room creation returned no data."); return; }
 
-    const membershipPayload = {
-      id: membershipId,
-      room_id: roomId,
-      user_id: currentUser.id,
-      player_name: playerName,
-      role: "player1"
-    };
-
-    const { error: roomError } = await supabase.from("rooms").insert(roomPayload);
-    if (roomError) throw new Error("Room creation failed: " + roomError.message);
-
-    const { error: membershipError } = await supabase.from("room_players").insert(membershipPayload);
-    if (membershipError) {
-      await supabase.from("rooms").delete().eq("id", roomId);
-      throw new Error("Membership creation failed: " + membershipError.message);
-    }
-
-    const { data: game, error: gameError } = await supabase
-      .from("games")
-      .insert({
-        room_id: roomId,
-        board_id: board.id,
-        current_turn: "player1",
-        player1_position: 0,
-        player2_position: 0
-      })
-      .select()
-      .single();
-
-    if (gameError) {
-      await supabase.from("room_players").delete().eq("id", membershipId);
-      await supabase.from("rooms").delete().eq("id", roomId);
-      throw new Error("Game creation failed: " + gameError.message);
-    }
-
-    if (!game) throw new Error("Game creation returned no data.");
-
-    currentRoom = roomPayload;
-    currentMembership = Object.assign({}, membershipPayload, {
-      joined_at: new Date().toISOString()
-    });
-    currentGame = game;
-    currentPlayers = [currentMembership];
-
-    logMessage("Created room " + code + " as player1 on " + board.name + ".");
-    showToast("Room " + code + " created!");
+    logMessage("Created room " + row.room_code + " as " + row.assigned_role + ".");
+    showToast("Room " + row.room_code + " created!");
     showGameScreen();
-    subscribeToRoom(roomId);
+    await loadRoomState(row.room_code);
   } finally {
     setButtonsDisabled(false);
-    updateUI();
   }
 }
 
@@ -816,181 +737,147 @@ async function createRoom() {
 async function joinRoom() {
   const playerName = playerNameInput.value.trim();
   const code = roomCodeInput.value.trim().toUpperCase();
-  if (!playerName) { alert("Enter a player name first."); return; }
-  if (!code) { alert("Enter a room code."); return; }
-  if (!currentUser?.id) throw new Error("No authenticated user found.");
+  if (!playerName) { notifyError("Enter a player name first."); return; }
+  if (!code) { notifyError("Enter a room code."); return; }
+  if (!currentUser?.id) { notifyError("Still connecting — try again in a moment."); return; }
 
   setButtonsDisabled(true);
-
   try {
-    const { data: room, error: roomError } = await supabase
-      .from("rooms").select("*").eq("code", code).maybeSingle();
-    if (roomError) throw new Error("Room lookup failed: " + roomError.message);
-    if (!room) throw new Error("No room found with code " + code + ".");
-    if (room.status !== "waiting") throw new Error("This room is no longer accepting players.");
+    /* Server-side join: assigns the role, fills the second seat, flips status,
+       and is idempotent if you're already a member (rejoin). */
+    const { data, error } = await supabase.rpc("join_room_by_code", {
+      room_code: code,
+      player_name_input: playerName
+    });
+    if (error) { notifyError(errorMessage(error, "Could not join room.")); return; }
 
-    const { data: players, error: playersError } = await supabase
-      .from("room_players").select("*").eq("room_id", room.id);
-    if (playersError) throw new Error("Players lookup failed: " + playersError.message);
-    const safePlayers = Array.isArray(players) ? players : [];
+    const row = Array.isArray(data) ? data[0] : data;
+    if (!row?.room_id) { notifyError("No room found with code " + code + "."); return; }
 
-    const existing = safePlayers.find(function (p) { return p.user_id === currentUser.id; });
-    if (existing) {
-      currentRoom = room;
-      currentMembership = existing;
-      currentPlayers = safePlayers;
-      logMessage("Rejoined room " + code + " as " + existing.role + ".");
-      showToast("Rejoined room " + code);
-      showGameScreen();
-      subscribeToRoom(room.id);
-      await loadRoomState(code);
-      return;
-    }
-
-    if (safePlayers.length >= 2) throw new Error("Room is full.");
-
-    const takenRoles = safePlayers.map(function (p) { return p.role; });
-    const role = takenRoles.includes("player1") ? "player2" : "player1";
-
-    const membershipId = crypto.randomUUID();
-    const { error: membershipError } = await supabase
-      .from("room_players")
-      .insert({
-        id: membershipId,
-        room_id: room.id,
-        user_id: currentUser.id,
-        player_name: playerName,
-        role: role
-      });
-    if (membershipError) throw new Error("Could not join room: " + membershipError.message);
-
-    if (safePlayers.length === 1) {
-      await supabase.from("rooms").update({ status: "playing" }).eq("id", room.id);
-    }
-
-    currentRoom = room;
-    currentMembership = {
-      id: membershipId,
-      room_id: room.id,
-      user_id: currentUser.id,
-      player_name: playerName,
-      role: role
-    };
-
-    logMessage("Joined room " + code + " as " + role + ".");
-    showToast("Joined as " + role);
+    const joinedCode = row.room_code_out ?? code;
+    logMessage("Joined room " + joinedCode + " as " + row.assigned_role + ".");
+    showToast("Joined as " + row.assigned_role);
     showGameScreen();
-    await loadRoomState(code);
+    await loadRoomState(joinedCode);
   } finally {
     setButtonsDisabled(false);
-    updateUI();
   }
 }
 
 /* ── Dice roll ── */
 
 async function rollDice() {
-  if (!currentRoom) { alert("Join a room first."); return; }
-  if (!currentGame) { alert("Game data not loaded. Try clicking Refresh."); return; }
-  if (!currentMembership) { alert("Player membership not found. Try refreshing the page."); return; }
+  if (!currentRoom || !currentGame || !currentMembership) {
+    notifyError("Game not ready yet. Try Refresh.");
+    return;
+  }
 
-  if (rollDiceBtn) rollDiceBtn.disabled = true;
-  setButtonsDisabled(true);
+  /* Disable immediately and shake the dice for instant feedback while the
+     server resolves the roll. The server is the only authority over the move. */
+  rollDiceBtn.disabled = true;
+  rollDiceBtn.classList.remove("pulse");
+  shakeDice();
+
+  const role = currentMembership.role;
+  const posKey = role === "player1" ? "player1_position" : "player2_position";
+  const fromPos = currentGame[posKey] ?? 0;
 
   try {
-    /* Re-fetch latest game state before rolling */
-    const { data: freshGame, error: gameRefetchError } = await supabase
-      .from("games").select("*").eq("id", currentGame.id).maybeSingle();
-    if (gameRefetchError) throw new Error("Could not verify game state: " + gameRefetchError.message);
-    if (!freshGame) throw new Error("Game no longer exists. Try refreshing the room.");
-    currentGame = freshGame;
+    const { data, error } = await supabase.rpc("roll_dice", { p_room_id: currentRoom.id });
+    if (error) { notifyError(errorMessage(error, "Roll failed.")); return; }
 
-    const { data: freshPlayers, error: playersRefetchError } = await supabase
-      .from("room_players").select("*").eq("room_id", currentRoom.id);
-    if (!playersRefetchError && Array.isArray(freshPlayers)) currentPlayers = freshPlayers;
+    const game = Array.isArray(data) ? data[0] : data;
+    if (!game) { notifyError("Roll returned no data."); return; }
 
-    /* Re-validate against fresh data */
-    if (currentGame.winner) { logMessage("Game is already over."); return; }
-    if (currentPlayers.length < 2) { logMessage("Waiting for player 2 to join."); return; }
-    if (currentMembership.role !== currentGame.current_turn) {
-      logMessage("Not your turn. Current turn: " + currentGame.current_turn);
-      return;
-    }
+    /* The RPC return value is authoritative \u2014 apply it directly. The realtime
+       broadcast of this same row arrives shortly after and is deduped by version. */
+    const board = findBoardById(game.board_id);
+    const move = resolveMove(fromPos, game.last_roll, board.jumps);
+    describeMove(game.last_roll, fromPos, move);
 
-    /* Compute roll */
-    const roll = cryptoRandomInt(1, 6);
-    animateDice(roll);
-
-    const board = findBoardById(currentGame.board_id);
-    const posKey = currentMembership.role === "player1" ? "player1_position" : "player2_position";
-    const currentPos = currentGame[posKey] ?? 0;
-    let newPos = currentPos + roll;
-    const nextTurn = currentGame.current_turn === "player1" ? "player2" : "player1";
-
-    /* Must land exactly on 100 */
-    if (newPos > 100) {
-      const bounceMsg = "Rolled " + roll + " \u2014 need exactly " + (100 - currentPos) + " to win. Stay at " + currentPos + ".";
-      logMessage(bounceMsg);
-      showToast(bounceMsg);
-
-      const { error } = await supabase
-        .from("games")
-        .update({ last_roll: roll, current_turn: nextTurn })
-        .eq("id", currentGame.id);
-      if (error) throw new Error("Update failed: " + error.message);
-
-      currentGame.last_roll = roll;
-      currentGame.current_turn = nextTurn;
-      animateMoves = true;
-      return;
-    }
-
-    /* Check for snake or ladder */
-    const jumpTarget = board.jumps[newPos];
-
-    if (jumpTarget) {
-      const jumpType = jumpTarget > newPos ? "Ladder" : "Snake";
-      const jumpMsg = "Rolled " + roll + ". " + jumpType + "! " + newPos + " \u2192 " + jumpTarget;
-      logMessage(jumpMsg);
-      showToast(jumpMsg);
-      newPos = jumpTarget;
-    } else {
-      const moveMsg = "Rolled " + roll + ". Moved " + currentPos + " \u2192 " + newPos;
-      logMessage(moveMsg);
-      showToast(moveMsg);
-    }
-
-    /* Build update */
-    const winner = newPos === 100 ? currentMembership.role : null;
-    const updatePayload = {
-      [posKey]: newPos,
-      last_roll: roll,
-      current_turn: winner ? currentGame.current_turn : nextTurn
-    };
-    if (winner) updatePayload.winner = winner;
-
-    const { error } = await supabase
-      .from("games")
-      .update(updatePayload)
-      .eq("id", currentGame.id);
-    if (error) throw new Error("Update failed: " + error.message);
-
-    /* Optimistic local state */
-    currentGame[posKey] = newPos;
-    currentGame.last_roll = roll;
-    currentGame.current_turn = updatePayload.current_turn;
-
-    if (winner) {
-      currentGame.winner = winner;
-      const winnerPlayer = currentPlayers.find(function (p) { return p.role === winner; });
-      logMessage((winnerPlayer?.player_name ?? winner) + " wins the game!");
-    }
-
+    animateDice(game.last_roll);
+    currentGame = game;
     animateMoves = true;
+
+    if (game.winner === role) logMessage("You reached square 100 \u2014 you win!");
   } finally {
-    setButtonsDisabled(false);
     updateUI();
   }
+}
+
+/* Friendly log + toast line for a resolved move (display only). */
+function describeMove(roll, fromPos, move) {
+  let msg;
+  if (move.bounced) {
+    msg = "Rolled " + roll + " \u2014 need exactly " + (100 - fromPos) + " to win. Stay at " + fromPos + ".";
+  } else if (move.jumpType === "ladder") {
+    msg = "Rolled " + roll + ". Ladder! " + move.landing + " \u2192 " + move.newPos;
+  } else if (move.jumpType === "snake") {
+    msg = "Rolled " + roll + ". Snake! " + move.landing + " \u2192 " + move.newPos;
+  } else {
+    msg = "Rolled " + roll + ". Moved " + fromPos + " \u2192 " + move.newPos;
+  }
+  logMessage(msg);
+  showToast(msg);
+}
+
+/* \u2500\u2500 Rematch / leave / forfeit \u2500\u2500 */
+
+async function requestRematch() {
+  if (!currentRoom) return;
+  rematchBtn.disabled = true;
+  try {
+    const { data, error } = await supabase.rpc("rematch", { p_room_id: currentRoom.id });
+    if (error) { notifyError(errorMessage(error, "Could not start a rematch.")); return; }
+    const game = Array.isArray(data) ? data[0] : data;
+    if (game) {
+      currentGame = game;
+      prevP1Pos = 0;
+      prevP2Pos = 0;
+      animateMoves = false;
+      winOverlayEl.classList.add("hidden");
+      diceCharEl.textContent = "?";
+      lastActionEl.textContent = "Roll to start";
+      logMessage("Rematch \u2014 new game on " + findBoardById(game.board_id).name + "!");
+      updateUI();
+    }
+  } finally {
+    rematchBtn.disabled = false;
+  }
+}
+
+function leaveToLobby() {
+  if (realtimeChannel) {
+    supabase.removeChannel(realtimeChannel);
+    realtimeChannel = null;
+  }
+  currentRoom = null;
+  currentMembership = null;
+  currentGame = null;
+  currentPlayers = [];
+  prevP1Pos = 0;
+  prevP2Pos = 0;
+  animateMoves = false;
+  presenceState = {};
+  diceCharEl.textContent = "?";
+  lastActionEl.textContent = "Roll to start";
+  rollDiceBtn.textContent = "Roll";
+  logEl.innerHTML = "";
+  winOverlayEl.classList.add("hidden");
+  gameScreenEl.classList.add("hidden");
+  lobbyEl.classList.remove("hidden");
+}
+
+/* Leaving an in-progress game forfeits it (the opponent wins). */
+async function leaveRoom() {
+  const inProgress = currentGame && !currentGame.winner && currentPlayers.length >= 2;
+  if (inProgress) {
+    const ok = window.confirm("Leave the game? Your opponent will be awarded the win.");
+    if (!ok) return;
+    const { error } = await supabase.rpc("forfeit", { p_room_id: currentRoom.id });
+    if (error) notifyError(errorMessage(error, "Could not leave cleanly."));
+  }
+  leaveToLobby();
 }
 
 /* ── Realtime subscriptions ── */
@@ -1002,7 +889,9 @@ function subscribeToRoom(roomId) {
   }
 
   realtimeChannel = supabase
-    .channel("room-" + roomId)
+    .channel("room-" + roomId, {
+      config: { presence: { key: currentMembership?.id || currentUser?.id || roomId } }
+    })
     .on(
       "postgres_changes",
       {
@@ -1011,18 +900,7 @@ function subscribeToRoom(roomId) {
         table: "games",
         filter: "room_id=eq." + roomId
       },
-      function (payload) {
-        if (payload.new) {
-          const prevRoll = currentGame ? currentGame.last_roll : null;
-          currentGame = payload.new;
-          if (currentGame.last_roll && currentGame.last_roll !== prevRoll) {
-            animateDice(currentGame.last_roll);
-          }
-          logMessage("Game updated (roll: " + (currentGame.last_roll ?? "-") + ").");
-          animateMoves = true;
-          updateUI();
-        }
-      }
+      handleGameChange
     )
     .on(
       "postgres_changes",
@@ -1044,11 +922,94 @@ function subscribeToRoom(roomId) {
         }
       }
     )
+    .on("presence", { event: "sync" }, handlePresenceSync)
     .subscribe(function (status) {
       if (status === "SUBSCRIBED") {
         logMessage("Realtime connected.");
+        realtimeChannel.track({
+          user_id: currentUser?.id,
+          role: currentMembership?.role,
+          name: currentMembership?.player_name
+        });
       }
     });
+}
+
+/* Apply an incoming game row. Deduped by `version` so a player's own roll (which
+   we already applied from the RPC return value) doesn't double-process. */
+function handleGameChange(payload) {
+  const incoming = payload.new;
+  if (!incoming) return;
+
+  if (currentGame && incoming.version != null && currentGame.version != null &&
+      incoming.version <= currentGame.version) {
+    return; // echo of state we already have
+  }
+
+  const prev = currentGame;
+  const moverRole = prev ? prev.current_turn : null;
+  const isRematch = prev && prev.winner && !incoming.winner;
+  const positionsChanged = !prev ||
+    incoming.player1_position !== prev.player1_position ||
+    incoming.player2_position !== prev.player2_position;
+  const isRoll = !isRematch && incoming.last_roll != null &&
+    (positionsChanged || (prev && incoming.last_roll !== prev.last_roll && !incoming.winner));
+
+  currentGame = incoming;
+
+  if (isRematch) {
+    prevP1Pos = 0;
+    prevP2Pos = 0;
+    animateMoves = false;
+    diceCharEl.textContent = "?";
+    lastActionEl.textContent = "Roll to start";
+    winOverlayEl.classList.add("hidden");
+    logMessage("Rematch — new game on " + findBoardById(incoming.board_id).name + "!");
+    updateUI();
+    return;
+  }
+
+  if (incoming.last_roll && (!prev || incoming.last_roll !== prev.last_roll)) {
+    animateDice(incoming.last_roll);
+  }
+
+  if (isRoll) {
+    const mover = currentPlayers.find(function (p) { return p.role === moverRole; });
+    logMessage((mover?.player_name ?? "Opponent") + " rolled " + incoming.last_roll + ".");
+  } else if (incoming.winner) {
+    const w = currentPlayers.find(function (p) { return p.role === incoming.winner; });
+    logMessage((w?.player_name ?? incoming.winner) + " wins the game.");
+  }
+
+  animateMoves = true;
+  updateUI();
+}
+
+/* ── Presence (online/offline indicators) ── */
+
+function handlePresenceSync() {
+  if (!realtimeChannel) return;
+  presenceState = realtimeChannel.presenceState();
+
+  const onlineRoles = new Set();
+  Object.values(presenceState).forEach(function (entries) {
+    entries.forEach(function (e) { if (e.role) onlineRoles.add(e.role); });
+  });
+
+  const myRole = currentMembership?.role;
+  const oppRole = myRole === "player1" ? "player2" : "player1";
+  const oppNowOnline = onlineRoles.has(oppRole);
+
+  if (currentPlayers.length >= 2 && opponentOnline && !oppNowOnline) {
+    showToast("Opponent disconnected");
+  }
+  opponentOnline = oppNowOnline;
+  updatePresenceIndicators(onlineRoles);
+}
+
+function updatePresenceIndicators(onlineRoles) {
+  p1OnlineEl.classList.toggle("online", onlineRoles.has("player1"));
+  p2OnlineEl.classList.toggle("online", onlineRoles.has("player2"));
 }
 
 /* ── Load room state ── */
@@ -1084,6 +1045,10 @@ async function loadRoomState(roomCode) {
   prevP1Pos = currentGame?.player1_position ?? 0;
   prevP2Pos = currentGame?.player2_position ?? 0;
 
+  /* Reset presence baseline; the channel re-tracks on (re)subscribe. */
+  presenceState = {};
+  opponentOnline = false;
+
   subscribeToRoom(room.id);
   logMessage("Loaded room " + room.code + ".");
   updateUI();
@@ -1093,16 +1058,18 @@ async function loadRoomState(roomCode) {
 
 async function boot() {
   try {
-    validateBoardSet();
+    validateBoardSet(boards);
     await ensureSignedIn();
     currentUser = await getCurrentUser();
     if (!currentUser?.id) throw new Error("Anonymous sign-in succeeded but no user was returned.");
 
+    authStatusEl.classList.remove("error");
     authStatusEl.textContent = "Connected \u2022 " + currentUser.id.slice(0, 8) + "\u2026";
     logMessage("Supabase session ready.");
     updateUI();
   } catch (error) {
     console.error(error);
+    authStatusEl.classList.add("error");
     authStatusEl.textContent = "Connection failed \u2014 check Supabase config.";
     logMessage("Boot error: " + error.message);
   }
@@ -1111,23 +1078,23 @@ async function boot() {
 /* ── Event listeners ── */
 
 createRoomBtn.addEventListener("click", async function () {
-  try { await createRoom(); } catch (e) { console.error(e); logMessage("Error: " + e.message); alert(e.message); }
+  try { await createRoom(); } catch (e) { console.error(e); logMessage("Error: " + e.message); notifyError(e.message); }
 });
 
 joinRoomBtn.addEventListener("click", async function () {
-  try { await joinRoom(); } catch (e) { console.error(e); logMessage("Error: " + e.message); alert(e.message); }
+  try { await joinRoom(); } catch (e) { console.error(e); logMessage("Error: " + e.message); notifyError(e.message); }
 });
 
 refreshRoomBtn.addEventListener("click", async function () {
   try {
     const code = currentRoom?.code || roomCodeInput.value.trim().toUpperCase();
-    if (!code) { alert("No room code available."); return; }
+    if (!code) { notifyError("No room code available."); return; }
     await loadRoomState(code);
-  } catch (e) { console.error(e); logMessage("Error: " + e.message); alert(e.message); }
+  } catch (e) { console.error(e); logMessage("Error: " + e.message); notifyError(e.message); }
 });
 
 rollDiceBtn.addEventListener("click", async function () {
-  try { await rollDice(); } catch (e) { console.error(e); logMessage("Error: " + e.message); alert(e.message); }
+  try { await rollDice(); } catch (e) { console.error(e); logMessage("Error: " + e.message); notifyError(e.message); }
 });
 
 copyCodeBtn.addEventListener("click", function () {
@@ -1140,25 +1107,16 @@ copyCodeBtn.addEventListener("click", function () {
   });
 });
 
-newGameBtn.addEventListener("click", function () {
-  if (realtimeChannel) {
-    supabase.removeChannel(realtimeChannel);
-    realtimeChannel = null;
-  }
-  currentRoom = null;
-  currentMembership = null;
-  currentGame = null;
-  currentPlayers = [];
-  prevP1Pos = 0;
-  prevP2Pos = 0;
-  animateMoves = false;
-  diceCharEl.textContent = "?";
-  lastActionEl.textContent = "Roll to start";
-  rollDiceBtn.textContent = "Roll";
-  logEl.innerHTML = "";
-  winOverlayEl.classList.add("hidden");
-  gameScreenEl.classList.add("hidden");
-  lobbyEl.classList.remove("hidden");
+rematchBtn.addEventListener("click", async function () {
+  try { await requestRematch(); } catch (e) { console.error(e); notifyError(e.message); }
+});
+
+leaveBtn.addEventListener("click", function () {
+  leaveToLobby();
+});
+
+leaveRoomBtn.addEventListener("click", async function () {
+  try { await leaveRoom(); } catch (e) { console.error(e); notifyError(e.message); leaveToLobby(); }
 });
 
 boot();
