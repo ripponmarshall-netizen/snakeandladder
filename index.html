@@ -41,6 +41,7 @@
       <span id="roomCodeDisplay" class="room-code">------</span>
       <button id="copyCodeBtn" class="bar-btn" aria-label="Copy room code">Copy</button>
       <button id="refreshRoomBtn" class="bar-btn" aria-label="Refresh room state">Refresh</button>
+      <button id="leaveRoomBtn" class="bar-btn" aria-label="Leave room">Leave</button>
     </header>
 
     <div class="player-strip">
@@ -50,6 +51,7 @@
           <span class="p-name" id="p1Name">Player 1</span>
           <span class="p-pos" id="p1Pos">Start</span>
         </div>
+        <span class="p-online" id="p1Online" title="Online status" aria-hidden="true"></span>
       </div>
       <span class="vs-label" aria-hidden="true">vs</span>
       <div id="p2Card" class="p-card">
@@ -58,6 +60,7 @@
           <span class="p-name" id="p2Name">Waiting&hellip;</span>
           <span class="p-pos" id="p2Pos">&mdash;</span>
         </div>
+        <span class="p-online" id="p2Online" title="Online status" aria-hidden="true"></span>
       </div>
     </div>
 
@@ -95,7 +98,10 @@
       <div class="win-crown" aria-hidden="true">\uD83D\uDC51</div>
       <h2 id="winTitle">Victory!</h2>
       <p id="winMessage">&mdash;</p>
-      <button id="newGameBtn" class="btn btn-primary">New Game</button>
+      <div class="win-actions">
+        <button id="rematchBtn" class="btn btn-primary btn-block">Rematch</button>
+        <button id="leaveBtn" class="btn btn-outline btn-block">Leave</button>
+      </div>
     </div>
   </div>
 
