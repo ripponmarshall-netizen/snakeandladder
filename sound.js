@@ -115,6 +115,17 @@ export function playSnake() {
   tone({ type: "sawtooth", freq: 660, toFreq: 150, duration: 0.45, gain: 0.13 });
 }
 
+/* Picking up a power-up — a bright two-note chime. */
+export function playPowerGain() {
+  tone({ type: "triangle", freq: 880, duration: 0.12, gain: 0.12 });
+  tone({ type: "triangle", freq: 1175, duration: 0.16, gain: 0.12, delay: 0.09 });
+}
+
+/* Spending a power-up — a quick zap. */
+export function playPowerUse() {
+  tone({ type: "square", freq: 300, toFreq: 760, duration: 0.18, gain: 0.1 });
+}
+
 /* Victory — a short fanfare (major arpeggio + topped octave). */
 export function playWin() {
   const notes = [523, 659, 784, 1047];

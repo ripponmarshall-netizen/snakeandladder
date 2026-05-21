@@ -23,14 +23,74 @@
       <div class="lobby-card">
         <label for="playerName">Your name</label>
         <input id="playerName" type="text" maxlength="20" placeholder="Enter name" autocomplete="off" />
+
+        <label>Your token</label>
+        <div id="avatarPick" class="avatar-pick" role="group" aria-label="Choose your token"></div>
+
         <button id="createRoomBtn" class="btn btn-primary btn-block">Create Room</button>
         <div class="divider"><span>or join</span></div>
         <label for="roomCodeInput">Room code</label>
         <input id="roomCodeInput" type="text" maxlength="6" placeholder="ABC123" autocomplete="off" />
         <button id="joinRoomBtn" class="btn btn-outline btn-block">Join Room</button>
+        <div class="divider"><span>or play offline</span></div>
+        <button id="localPlayBtn" class="btn btn-outline btn-block">Play vs Computer</button>
+      </div>
+      <div class="lobby-controls">
+        <button id="themeBtn" class="bar-btn" aria-label="Change theme">Theme: Light</button>
+        <button id="statsBtn" class="bar-btn" aria-label="View stats">Stats</button>
       </div>
       <!-- [FOOTNOTE] Quiet premium brand attribution -->
       <p class="lobby-footnote">Workflow Coaching and Optimisation Co.</p>
+    </div>
+  </div>
+
+  <!-- LOCAL SETUP -->
+  <div id="localSetup" class="modal-overlay hidden" role="dialog" aria-labelledby="localSetupTitle">
+    <div class="modal-box">
+      <h2 id="localSetupTitle">Offline Game</h2>
+
+      <label for="lsPlayers">Players</label>
+      <select id="lsPlayers">
+        <option value="2">2 players</option>
+        <option value="3">3 players</option>
+        <option value="4">4 players</option>
+      </select>
+
+      <div id="lsSeats" class="ls-seats"></div>
+
+      <label for="lsBoard">Board</label>
+      <select id="lsBoard">
+        <option value="random">Random</option>
+      </select>
+
+      <label class="ls-check">
+        <input type="checkbox" id="lsPowerUps" checked />
+        <span>Power-up tiles</span>
+      </label>
+
+      <label for="lsTimer">Turn timer</label>
+      <select id="lsTimer">
+        <option value="0">Off</option>
+        <option value="15">15 seconds</option>
+        <option value="30">30 seconds</option>
+      </select>
+
+      <div class="modal-actions">
+        <button id="lsStartBtn" class="btn btn-primary btn-block">Start Game</button>
+        <button id="lsCancelBtn" class="btn btn-outline btn-block">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- STATS -->
+  <div id="statsOverlay" class="modal-overlay hidden" role="dialog" aria-labelledby="statsTitle">
+    <div class="modal-box">
+      <h2 id="statsTitle">Your Stats</h2>
+      <div id="statsBody" class="stats-body"></div>
+      <div class="modal-actions">
+        <button id="statsCloseBtn" class="btn btn-primary btn-block">Close</button>
+        <button id="statsClearBtn" class="btn btn-outline btn-block">Clear History</button>
+      </div>
     </div>
   </div>
 
@@ -39,13 +99,14 @@
     <header class="room-bar">
       <span class="room-tag">ROOM</span>
       <span id="roomCodeDisplay" class="room-code">------</span>
+      <button id="themeBtnGame" class="bar-btn" aria-label="Change theme">Theme</button>
       <button id="muteBtn" class="bar-btn" aria-label="Toggle sound" aria-pressed="false">&#128266;</button>
       <button id="copyCodeBtn" class="bar-btn" aria-label="Copy room code">Copy</button>
       <button id="refreshRoomBtn" class="bar-btn" aria-label="Refresh room state">Refresh</button>
       <button id="leaveRoomBtn" class="bar-btn" aria-label="Leave room">Leave</button>
     </header>
 
-    <div class="player-strip">
+    <div id="playerStrip" class="player-strip">
       <div id="p1Card" class="p-card">
         <div class="p-dot black" aria-hidden="true"></div>
         <div class="p-info">
@@ -65,9 +126,15 @@
       </div>
     </div>
 
+    <!-- LOCAL multi-player strip (built dynamically) -->
+    <div id="localStrip" class="player-strip local-strip hidden"></div>
+
     <div id="turnBanner" class="turn-banner state-wait" aria-live="polite">
       <span id="turnText">Waiting for opponent&hellip;</span>
     </div>
+    <div id="turnTimer" class="turn-timer hidden"><span id="turnTimerBar" class="turn-timer-bar"></span></div>
+
+    <div id="emoteBar" class="emote-bar hidden" role="group" aria-label="Send a reaction"></div>
 
     <div class="game-layout">
       <div class="board-frame">
@@ -75,10 +142,12 @@
       </div>
       <div class="side-col">
         <div id="dice" class="dice" aria-label="Dice">
+          <div id="diceCube" class="dice-cube" aria-hidden="true"></div>
           <span id="diceChar" class="dice-val" aria-live="polite">?</span>
         </div>
         <p id="lastAction" class="side-hint">Roll to start</p>
         <button id="rollDiceBtn" class="roll-btn" disabled>Roll</button>
+        <div id="powerTray" class="power-tray hidden" aria-label="Power-ups"></div>
         <p id="boardName" class="side-hint board-label">&mdash;</p>
       </div>
     </div>
