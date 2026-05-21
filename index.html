@@ -27,6 +27,16 @@
         <label>Your token</label>
         <div id="avatarPick" class="avatar-pick" role="group" aria-label="Choose your token"></div>
 
+        <label>Dice skin</label>
+        <div id="diceSkinPick" class="dice-skin-pick" role="group" aria-label="Choose your dice skin"></div>
+
+        <label for="onlineMaxPlayers">Players</label>
+        <select id="onlineMaxPlayers">
+          <option value="2">2 players</option>
+          <option value="3">3 players</option>
+          <option value="4">4 players</option>
+        </select>
+
         <button id="createRoomBtn" class="btn btn-primary btn-block">Create Room</button>
         <div class="divider"><span>or join</span></div>
         <label for="roomCodeInput">Room code</label>
@@ -106,25 +116,8 @@
       <button id="leaveRoomBtn" class="bar-btn" aria-label="Leave room">Leave</button>
     </header>
 
-    <div id="playerStrip" class="player-strip">
-      <div id="p1Card" class="p-card">
-        <div class="p-dot black" aria-hidden="true"></div>
-        <div class="p-info">
-          <span class="p-name" id="p1Name">Player 1</span>
-          <span class="p-pos" id="p1Pos">Start</span>
-        </div>
-        <span class="p-online" id="p1Online" title="Online status" aria-hidden="true"></span>
-      </div>
-      <span class="vs-label" aria-hidden="true">vs</span>
-      <div id="p2Card" class="p-card">
-        <div class="p-dot white" aria-hidden="true"></div>
-        <div class="p-info">
-          <span class="p-name" id="p2Name">Waiting&hellip;</span>
-          <span class="p-pos" id="p2Pos">&mdash;</span>
-        </div>
-        <span class="p-online" id="p2Online" title="Online status" aria-hidden="true"></span>
-      </div>
-    </div>
+    <!-- Online player strip (built dynamically, 2-4 seats) -->
+    <div id="playerStrip" class="player-strip"></div>
 
     <!-- LOCAL multi-player strip (built dynamically) -->
     <div id="localStrip" class="player-strip local-strip hidden"></div>

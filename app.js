@@ -17,6 +17,7 @@ const authStatusEl = document.getElementById("authStatus");
 const playerNameInput = document.getElementById("playerName");
 const roomCodeInput = document.getElementById("roomCodeInput");
 const createRoomBtn = document.getElementById("createRoomBtn");
+const onlineMaxPlayersEl = document.getElementById("onlineMaxPlayers");
 const joinRoomBtn = document.getElementById("joinRoomBtn");
 const refreshRoomBtn = document.getElementById("refreshRoomBtn");
 const rollDiceBtn = document.getElementById("rollDiceBtn");
@@ -26,13 +27,6 @@ const lobbyEl = document.getElementById("lobby");
 const gameScreenEl = document.getElementById("gameScreen");
 const roomCodeDisplayEl = document.getElementById("roomCodeDisplay");
 const boardNameEl = document.getElementById("boardName");
-
-const p1Card = document.getElementById("p1Card");
-const p2Card = document.getElementById("p2Card");
-const p1NameEl = document.getElementById("p1Name");
-const p2NameEl = document.getElementById("p2Name");
-const p1PosEl = document.getElementById("p1Pos");
-const p2PosEl = document.getElementById("p2Pos");
 
 const turnBannerEl = document.getElementById("turnBanner");
 const turnTextEl = document.getElementById("turnText");
@@ -52,8 +46,6 @@ const leaveBtn = document.getElementById("leaveBtn");
 const copyCodeBtn = document.getElementById("copyCodeBtn");
 const leaveRoomBtn = document.getElementById("leaveRoomBtn");
 const muteBtn = document.getElementById("muteBtn");
-const p1OnlineEl = document.getElementById("p1Online");
-const p2OnlineEl = document.getElementById("p2Online");
 
 const diceCubeEl = document.getElementById("diceCube");
 const playerStripEl = document.getElementById("playerStrip");
@@ -64,6 +56,7 @@ const emoteBarEl = document.getElementById("emoteBar");
 const powerTrayEl = document.getElementById("powerTray");
 
 const avatarPickEl = document.getElementById("avatarPick");
+const diceSkinPickEl = document.getElementById("diceSkinPick");
 const localPlayBtn = document.getElementById("localPlayBtn");
 const themeBtn = document.getElementById("themeBtn");
 const themeBtnGame = document.getElementById("themeBtnGame");
@@ -107,11 +100,19 @@ let pendingAnims = 0;
 let myAvatar = { color: null, emoji: null };
 let turnTimerHandle = null;
 let diceRolling = false;
+let pendingVictory = null; // winner seat whose victory-run is animating (overlay deferred)
 
 const AI_THINK_MS = 850;
 const DEFAULT_SEAT_COLORS = ["#3d8bff", "#ff5fa2", "#18c2a8", "#f5b430"];
 const AVATAR_EMOJIS = ["🐱", "🐶", "🦊", "🐼", "🚀", "⭐"];
 const EMOTES = ["👍", "😂", "😮", "🎉", "😭", "🔥"];
+const DICE_SKINS = [
+  { id: "classic", name: "Classic" },
+  { id: "gold", name: "Gold" },
+  { id: "neon", name: "Neon" },
+  { id: "wood", name: "Wood" }
+];
+let myDiceSkin = "classic";
 
 function reducedMotion() {
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -573,14 +574,20 @@ function makeGhost(frameEl, seat) {
    (resolveMove-shaped, optionally { relocate:true } for a power-up swap). */
 async function animateTokenMove(fromSquare, toSquare, seat, move) {
   const idx = seat.idx;
+  const winnerRole = currentGame?.winner;
+  const isWinningMove = winnerRole === seat.role && toSquare === 100 && !move.bounced;
 
-  if (reducedMotion()) { showRealToken(toSquare, idx); return; }
-  if (currentGame?.winner) { showRealToken(toSquare, idx); return; }
+  if (reducedMotion()) {
+    showRealToken(toSquare, idx);
+    if (isWinningMove) revealWin(seat);
+    return;
+  }
+  if (winnerRole && !isWinningMove) { showRealToken(toSquare, idx); return; }
 
   if (activeGhost) { activeGhost.remove(); activeGhost = null; }
 
   const frameEl = boardEl.closest(".board-frame");
-  if (!frameEl) { showRealToken(toSquare, idx); return; }
+  if (!frameEl) { showRealToken(toSquare, idx); if (isWinningMove) revealWin(seat); return; }
 
   const ghost = makeGhost(frameEl, seat);
   activeGhost = ghost;
@@ -590,13 +597,23 @@ async function animateTokenMove(fromSquare, toSquare, seat, move) {
     ghost.remove();
     activeGhost = null;
     showRealToken(toSquare, idx);
+    if (isWinningMove) revealWin(seat);
     return;
   }
   ghost.style.left = startPos.left + "px";
   ghost.style.top = startPos.top + "px";
 
   await raf();
-  if (activeGhost !== ghost) return;
+  if (activeGhost !== ghost) { if (isWinningMove) revealWin(seat); return; }
+
+  /* [VICTORY RUN] Dramatic slow-motion dash to 100, then a big splash. */
+  if (isWinningMove) {
+    await animateVictoryRun(fromSquare, ghost, seat);
+    if (activeGhost === ghost) { ghost.remove(); activeGhost = null; }
+    showRealToken(toSquare, idx);
+    revealWin(seat);
+    return;
+  }
 
   /* [SWAP] Direct slide to the destination — no tile-by-tile hops. */
   if (move.relocate) {
@@ -607,9 +624,10 @@ async function animateTokenMove(fromSquare, toSquare, seat, move) {
     return;
   }
 
+  /* [BOUNCE-BACK] Overshot 100 — dash to the wall, bonk, rebound to start. */
   if (move.bounced) {
-    ghost.remove();
-    activeGhost = null;
+    await animateBounce(fromSquare, ghost, seat);
+    if (activeGhost === ghost) { ghost.remove(); activeGhost = null; }
     showRealToken(toSquare, idx);
     return;
   }
@@ -635,19 +653,35 @@ async function animateTokenMove(fromSquare, toSquare, seat, move) {
     if (activeGhost !== ghost) return;
 
     ghost.classList.add(isLadder ? "climb-glow" : "descend-glow");
-    if (isLadder) { sfx.playLadder(); haptics.ladder(); }
-    else { sfx.playSnake(); haptics.snake(); triggerShake(); }
-
     const jumpTarget = getSquareTokenPos(toSquare);
-    if (jumpTarget) {
-      await slideTo(ghost, jumpTarget.left, jumpTarget.top, isLadder ? 420 : 380, !isLadder);
-    }
 
     if (isLadder) {
+      sfx.playLadder(); haptics.ladder();
+      /* Stepped climb: hop rung-by-rung up the ladder line. */
+      const startL = parseFloat(ghost.style.left) || 0;
+      const startT = parseFloat(ghost.style.top) || 0;
+      if (jumpTarget) {
+        const dist = Math.hypot(jumpTarget.left - startL, jumpTarget.top - startT);
+        const steps = Math.max(3, Math.min(7, Math.round(dist / 42)));
+        for (let i = 1; i <= steps; i++) {
+          if (activeGhost !== ghost) break;
+          const t = i / steps;
+          await hopTo(ghost, startL + (jumpTarget.left - startL) * t, startT + (jumpTarget.top - startT) * t, 150);
+        }
+      }
       const cell = boardEl.querySelector("[data-square='" + toSquare + "']");
       if (cell) {
         const r = cell.getBoundingClientRect();
         confetti.sparkle(r.left + r.width / 2, r.top + r.height / 2);
+      }
+    } else {
+      /* Snake: a quick chomp at the head before the slithery slide down. */
+      sfx.playSnake(); haptics.snake();
+      chompAt(rawLanding);
+      triggerShake();
+      await sleep(150);
+      if (activeGhost === ghost && jumpTarget) {
+        await slideTo(ghost, jumpTarget.left, jumpTarget.top, 380, true);
       }
     }
   }
@@ -656,9 +690,116 @@ async function animateTokenMove(fromSquare, toSquare, seat, move) {
   showRealToken(toSquare, idx);
 }
 
+/* [VICTORY RUN] Slow-motion dash up the final stretch to 100 with a building
+   glow trail, then a big splash, screen flash and shake on arrival. Runs on
+   every client (winner and spectators) so opponents can watch and react before
+   the overlay appears. `ghost` is the already-positioned ghost token. */
+async function animateVictoryRun(fromSquare, ghost, seat) {
+  const color = seat.color || DEFAULT_SEAT_COLORS[seat.idx - 1];
+  document.body.classList.add("victory-slowmo");
+  sfx.playVictoryRun();
+
+  /* Defensive cap (current boards always win by an exact dice landing 94..99,
+     so this is short; guards against any future ladder-to-100). */
+  const runStart = Math.max(fromSquare, 100 - 12);
+  if (runStart !== fromSquare) {
+    const sp = getSquareTokenPos(runStart);
+    if (sp) { ghost.style.left = sp.left + "px"; ghost.style.top = sp.top + "px"; }
+  }
+
+  const total = Math.max(1, 100 - runStart);
+  let step = 0;
+  for (let sq = runStart + 1; sq <= 100; sq++) {
+    const target = getSquareTokenPos(sq);
+    if (!target || activeGhost !== ghost) break;
+    step += 1;
+    const frac = step / total;
+    const dur = 260 + Math.round(360 * frac); // slow down approaching the finish
+    if (sq === 100) await sleep(220);         // anticipation hover before the last hop
+    await hopTo(ghost, target.left, target.top, dur);
+    sfx.playHop();
+    emitTrail(ghost, color);
+    emitTrail(ghost, color);
+  }
+
+  const cell = boardEl.querySelector("[data-square='100']");
+  if (cell) {
+    const r = cell.getBoundingClientRect();
+    confetti.splash(r.left + r.width / 2, r.top + r.height / 2, color);
+    spawnVictoryRing(r.left + r.width / 2, r.top + r.height / 2, color);
+  }
+  flashScreen();
+  triggerShake();
+  haptics.win();
+  document.body.classList.remove("victory-slowmo");
+}
+
+/* [BOUNCE-BACK] Overshot 100 — dash to the wall, bonk, and rebound to start. */
+async function animateBounce(fromSquare, ghost, seat) {
+  for (let sq = fromSquare + 1; sq <= 100; sq++) {
+    const target = getSquareTokenPos(sq);
+    if (!target || activeGhost !== ghost) break;
+    await hopTo(ghost, target.left, target.top, 150);
+    sfx.playHop();
+  }
+  if (activeGhost !== ghost) return;
+  sfx.playBonk();
+  haptics.snake();
+  triggerShake();
+  ghost.classList.add("descend-glow");
+  await sleep(120);
+  const back = getSquareTokenPos(fromSquare);
+  if (back && activeGhost === ghost) await slideTo(ghost, back.left, back.top, 380, true);
+  ghost.classList.remove("descend-glow");
+}
+
+/* [SNAKE BITE] A brief chomp flash at the snake's head (the landing square). */
+function chompAt(square) {
+  if (reducedMotion()) return;
+  const cell = boardEl.querySelector("[data-square='" + square + "']");
+  if (!cell) return;
+  const chomp = document.createElement("div");
+  chomp.className = "snake-chomp";
+  cell.appendChild(chomp);
+  setTimeout(function () { chomp.remove(); }, 460);
+}
+
+/* [SPLASH] Expanding shockwave ring at the finish, layered over the particles. */
+function spawnVictoryRing(x, y, color) {
+  if (reducedMotion()) return;
+  const ring = document.createElement("div");
+  ring.className = "victory-ring";
+  ring.style.left = x + "px";
+  ring.style.top = y + "px";
+  ring.style.setProperty("--ring", color || "var(--gold)");
+  document.body.appendChild(ring);
+  setTimeout(function () { ring.remove(); }, 900);
+}
+
+/* [SPLASH] Brief full-screen flash on the winning landing. */
+function flashScreen() {
+  if (reducedMotion()) return;
+  const flash = document.createElement("div");
+  flash.className = "victory-flash";
+  document.body.appendChild(flash);
+  setTimeout(function () { flash.remove(); }, 520);
+}
+
+/* Reveal the (deferred) win overlay once the victory run has finished. */
+function revealWin(seat) {
+  pendingVictory = null;
+  winOverlayEl.classList.remove("hidden");
+  celebrateWinOnce(seat);
+}
+
 /* ═══════════════════ END ANIMATION SYSTEM ═══════════════════ */
 
 /* ── Seats: a unified per-player view both modes render from ── */
+
+/* Max seats for the current online room (2..4); defaults to 2 before a room loads. */
+function onlineMaxPlayers() {
+  return Math.min(Math.max((currentRoom && currentRoom.max_players) || 2, 2), 4);
+}
 
 function avatarColorFor(role, idx) {
   if (gameMode === "online" && currentMembership && role === currentMembership.role && myAvatar.color) {
@@ -690,20 +831,18 @@ function getSeats() {
   }
 
   const out = [];
-  const p1 = currentPlayers.find(function (p) { return p.role === "player1"; });
-  out.push({
-    role: "player1", idx: 1,
-    position: currentGame ? (currentGame.player1_position || 0) : 0,
-    color: avatarColorFor("player1", 1), emoji: avatarEmojiFor("player1"),
-    name: p1 ? p1.player_name : "Player 1", kind: "human"
-  });
-  const p2 = currentPlayers.find(function (p) { return p.role === "player2"; });
-  out.push({
-    role: "player2", idx: 2,
-    position: currentGame ? (currentGame.player2_position || 0) : 0,
-    color: avatarColorFor("player2", 2), emoji: avatarEmojiFor("player2"),
-    name: p2 ? p2.player_name : "Waiting…", kind: "human"
-  });
+  const max = onlineMaxPlayers();
+  for (let i = 1; i <= max; i++) {
+    const role = "player" + i;
+    const p = currentPlayers.find(function (pp) { return pp.role === role; });
+    out.push({
+      role: role, idx: i,
+      position: currentGame ? (currentGame[role + "_position"] || 0) : 0,
+      color: avatarColorFor(role, i), emoji: avatarEmojiFor(role),
+      name: p ? p.player_name : "Waiting…", kind: "human",
+      present: !!p
+    });
+  }
   return out;
 }
 
@@ -825,6 +964,12 @@ function renderBoard() {
           if (animateMoves && (prevPositions[s.role] || 0) !== s.position) {
             tk.classList.add("bounce");
           }
+          if (currentGame && !currentGame.winner && currentGame.current_turn === s.role) {
+            tk.classList.add("turn-glow");
+          }
+          if (gameMode === "local" && localState && localState.pending[s.role] && localState.pending[s.role].shield) {
+            tk.classList.add("shielded");
+          }
           wrap.appendChild(tk);
         });
         cell.appendChild(wrap);
@@ -862,6 +1007,18 @@ function updateUI() {
     diceCharEl.textContent = String(currentGame.last_roll);
     if (!diceRolling) dice3d.setFace(currentGame.last_roll);
     lastActionEl.textContent = "Rolled " + currentGame.last_roll;
+  }
+
+  /* A winning move that will animate: hold the overlay back until the victory
+     run finishes (revealWin reopens it). Guarded so re-entrant updateUI calls
+     during the run don't reset or prematurely reveal it. */
+  if (!pendingVictory && !winCelebrated && shouldAnimate && !reducedMotion()) {
+    const winnerRole = currentGame?.winner;
+    if (winnerRole) {
+      const ws = seats.find(function (s) { return s.role === winnerRole; });
+      const oldPos = prev[winnerRole] || 0;
+      if (ws && ws.position === 100 && oldPos > 0 && oldPos !== 100) pendingVictory = ws;
+    }
   }
 
   if (gameMode === "local") updateLocalUI(seats);
@@ -914,46 +1071,40 @@ function updateOnlineUI(seats) {
   powerTrayEl.classList.add("hidden");
   turnTimerEl.classList.add("hidden");
 
-  const p1 = currentPlayers.find(function (p) { return p.role === "player1"; });
-  const p2 = currentPlayers.find(function (p) { return p.role === "player2"; });
+  renderStrip(playerStripEl, seats, {
+    currentTurn: currentGame?.current_turn,
+    winner: currentGame?.winner,
+    online: true
+  });
 
-  p1NameEl.textContent = p1?.player_name ?? "Player 1";
-  p2NameEl.textContent = p2?.player_name ?? "Waiting…";
-  p1PosEl.textContent = currentGame ? "Sq " + (currentGame.player1_position || 0) : "Start";
-  p2PosEl.textContent = currentGame && p2 ? "Sq " + (currentGame.player2_position || 0) : "—";
-
-  applyDotAvatar(p1Card.querySelector(".p-dot"), seats[0]);
-  applyDotAvatar(p2Card.querySelector(".p-dot"), seats[1]);
-
+  const max = onlineMaxPlayers();
+  const roomFull = currentPlayers.length >= max;
   const isMyTurn =
     currentGame &&
     !currentGame.winner &&
-    currentPlayers.length === 2 &&
+    roomFull &&
     currentMembership?.role === currentGame.current_turn;
-
-  p1Card.classList.toggle("active", currentGame?.current_turn === "player1" && !currentGame?.winner);
-  p2Card.classList.toggle("active", currentGame?.current_turn === "player2" && !currentGame?.winner);
 
   turnBannerEl.classList.remove("state-go", "state-wait", "state-win");
 
   if (currentGame?.winner) {
     const wp = currentPlayers.find(function (p) { return p.role === currentGame.winner; });
     const winnerName = wp?.player_name ?? currentGame.winner;
-    const winnerPos = currentGame.winner === "player1"
-      ? currentGame.player1_position
-      : currentGame.player2_position;
+    const winnerPos = currentGame[currentGame.winner + "_position"];
     turnTextEl.textContent = winnerName + " wins!";
     turnBannerEl.classList.add("state-win");
-    winTitleEl.textContent = "Victory!";
+    winTitleEl.textContent = currentGame.winner === currentMembership?.role ? "Victory!" : "Game Over";
     winMessageEl.textContent = winnerPos === 100
       ? winnerName + " reached square 100!"
-      : winnerName + " wins — opponent left the game.";
-    winOverlayEl.classList.remove("hidden");
-    celebrateWinOnce({ role: currentGame.winner, name: winnerName });
+      : winnerName + " wins — last player standing.";
+    if (!pendingVictory) {
+      winOverlayEl.classList.remove("hidden");
+      celebrateWinOnce({ role: currentGame.winner, name: winnerName });
+    }
   } else {
     winOverlayEl.classList.add("hidden");
-    if (currentPlayers.length < 2) {
-      turnTextEl.textContent = "Waiting for opponent…";
+    if (!roomFull) {
+      turnTextEl.textContent = "Waiting for players (" + currentPlayers.length + "/" + max + ")…";
       turnBannerEl.classList.add("state-wait");
     } else if (isMyTurn) {
       turnTextEl.textContent = "Your turn — roll the dice!";
@@ -984,7 +1135,11 @@ function updateLocalUI(seats) {
   refreshRoomBtn.style.display = "none";
   emoteBarEl.classList.remove("hidden");
 
-  renderLocalStrip(seats);
+  renderStrip(localStripEl, seats, {
+    currentTurn: localState.current_turn,
+    winner: localState.winner,
+    online: false
+  });
 
   const winner = localState.winner;
   const curRole = localState.current_turn;
@@ -999,8 +1154,10 @@ function updateLocalUI(seats) {
     turnBannerEl.classList.add("state-win");
     winTitleEl.textContent = ws.kind === "cpu" ? "Defeat" : "Victory!";
     winMessageEl.textContent = ws.name + " reached square 100!";
-    winOverlayEl.classList.remove("hidden");
-    celebrateWinOnce(ws);
+    if (!pendingVictory) {
+      winOverlayEl.classList.remove("hidden");
+      celebrateWinOnce(ws);
+    }
   } else {
     winOverlayEl.classList.add("hidden");
     if (humanTurn) {
@@ -1020,11 +1177,19 @@ function updateLocalUI(seats) {
   renderPowerTray();
 }
 
-function renderLocalStrip(seats) {
-  localStripEl.innerHTML = "";
+/* Shared player-strip renderer for both modes. Each card carries data-role so
+   emotes/presence can target it without per-seat element refs. opts:
+   { currentTurn, winner, online }. */
+function renderStrip(targetEl, seats, opts) {
+  const o = opts || {};
+  targetEl.innerHTML = "";
   seats.forEach(function (s) {
+    const isActive = o.currentTurn === s.role && !o.winner;
+    const waiting = o.online && s.present === false;
+
     const card = document.createElement("div");
-    card.className = "p-card" + (localState.current_turn === s.role && !localState.winner ? " active" : "");
+    card.className = "p-card" + (isActive ? " active spotlight" : "") + (waiting ? " waiting" : "");
+    card.setAttribute("data-role", s.role);
 
     const dot = document.createElement("div");
     dot.className = "p-dot";
@@ -1037,13 +1202,21 @@ function renderLocalStrip(seats) {
     name.textContent = s.name + (s.kind === "cpu" ? " (CPU)" : "");
     const pos = document.createElement("span");
     pos.className = "p-pos";
-    pos.textContent = s.position > 0 ? "Sq " + s.position : "Start";
+    pos.textContent = s.position > 0 ? "Sq " + s.position : (waiting ? "—" : "Start");
     info.appendChild(name);
     info.appendChild(pos);
 
     card.appendChild(dot);
     card.appendChild(info);
-    localStripEl.appendChild(card);
+
+    if (o.online) {
+      const onl = document.createElement("span");
+      onl.className = "p-online";
+      onl.setAttribute("data-role", s.role);
+      card.appendChild(onl);
+    }
+
+    targetEl.appendChild(card);
   });
 }
 
@@ -1094,17 +1267,22 @@ async function createRoom() {
   if (!playerName) { notifyError("Enter a player name first."); return; }
   if (!currentUser?.id) { notifyError("Still connecting — try again in a moment."); return; }
 
+  const maxPlayers = parseInt(onlineMaxPlayersEl?.value, 10) || 2;
+
   setButtonsDisabled(true);
   try {
     /* Atomic server-side create: room + player1 + game, unique code, random board. */
-    const { data, error } = await supabase.rpc("create_room", { p_player_name: playerName });
+    const { data, error } = await supabase.rpc("create_room", {
+      p_player_name: playerName,
+      p_max_players: maxPlayers
+    });
     if (error) { notifyError(errorMessage(error, "Could not create a room.")); return; }
 
     const row = Array.isArray(data) ? data[0] : data;
     if (!row?.room_code) { notifyError("Room creation returned no data."); return; }
 
-    logMessage("Created room " + row.room_code + " as " + row.assigned_role + ".");
-    showToast("Room " + row.room_code + " created!");
+    logMessage("Created room " + row.room_code + " (" + maxPlayers + "P) as " + row.assigned_role + ".");
+    showToast("Room " + row.room_code + " — share to fill " + maxPlayers + " seats!");
     showGameScreen();
     await loadRoomState(row.room_code);
   } finally {
@@ -1162,7 +1340,7 @@ async function rollDice() {
   haptics.roll();
 
   const role = currentMembership.role;
-  const posKey = role === "player1" ? "player1_position" : "player2_position";
+  const posKey = role + "_position";
   const fromPos = currentGame[posKey] ?? 0;
 
   try {
@@ -1220,6 +1398,7 @@ async function requestRematch() {
       prevPositions = {};
       animateMoves = false;
       winCelebrated = false;
+      pendingVictory = null;
       confetti.clear();
       winOverlayEl.classList.add("hidden");
       setDiceFace(0);
@@ -1248,6 +1427,7 @@ function leaveToLobby() {
   prevPositions = {};
   animateMoves = false;
   winCelebrated = false;
+  pendingVictory = null;
   confetti.clear();
   presenceState = {};
   setDiceFace(0);
@@ -1275,9 +1455,12 @@ async function leaveRoom() {
     return;
   }
 
-  const inProgress = currentGame && !currentGame.winner && currentPlayers.length >= 2;
+  const inProgress = currentGame && !currentGame.winner && currentPlayers.length >= onlineMaxPlayers();
   if (inProgress) {
-    const ok = window.confirm("Leave the game? Your opponent will be awarded the win.");
+    const msg = currentPlayers.length > 2
+      ? "Leave the game? You'll drop out of the match."
+      : "Leave the game? Your opponent will be awarded the win.";
+    const ok = window.confirm(msg);
     if (!ok) return;
     const { error } = await supabase.rpc("forfeit", { p_room_id: currentRoom.id });
     if (error) notifyError(errorMessage(error, "Could not leave cleanly."));
@@ -1317,6 +1500,22 @@ function applyLocalRoll(roll, chosen) {
   if (!busyAnimating) afterLocalTurn();
 }
 
+function sparkleAtSquare(square) {
+  const cell = boardEl.querySelector("[data-square='" + square + "']");
+  if (!cell) return;
+  const r = cell.getBoundingClientRect();
+  confetti.sparkle(r.left + r.width / 2, r.top + r.height / 2);
+}
+
+/* Briefly glow the dice (e.g. on a Double Roll). */
+function pulseDiceGlow() {
+  if (reducedMotion()) return;
+  diceEl.classList.remove("power-glow");
+  void diceEl.offsetWidth;
+  diceEl.classList.add("power-glow");
+  setTimeout(function () { diceEl.classList.remove("power-glow"); }, 900);
+}
+
 function describeLocalEvents(events) {
   events.forEach(function (e) {
     if (e.type === "powerup") {
@@ -1324,19 +1523,26 @@ function describeLocalEvents(events) {
       if (e.id === "doubleRoll") {
         logMessage(seatName(e.role) + " used Double Roll: " + e.rolls[0] + " + " + e.rolls[1] + " = " + e.total + ".");
         showToast("Double Roll — moved " + e.total + "!");
+        pulseDiceGlow();
+        showEmote(e.role, "🎲");
       } else if (e.id === "shield") {
         logMessage(seatName(e.role) + " armed a Shield.");
+        showEmote(e.role, "🛡️");
       } else if (e.id === "swap") {
         logMessage(seatName(e.role) + " used Swap.");
+        showEmote(e.role, "🔄");
       }
     } else if (e.type === "shieldBlock") {
       showToast("Shield blocked the snake!");
       logMessage("Shield blocked a snake at " + e.at + ".");
+      sparkleAtSquare(e.at);
+      showEmote(e.role, "🛡️");
     } else if (e.type === "acquire") {
       sfx.playPowerGain();
       const meta = localGame.POWER_UPS[e.id];
       logMessage(seatName(e.role) + " picked up " + (meta ? meta.name : e.id) + "!");
       showToast("Power-up: " + (meta ? meta.name : e.id));
+      sparkleAtSquare(e.at);
     } else if (e.type === "move") {
       let msg;
       if (e.jumpType === "ladder") msg = seatName(e.role) + " climbed " + e.landing + " → " + e.to + "!";
@@ -1586,13 +1792,8 @@ function sendEmote(emoji) {
 }
 
 function showEmote(role, emoji) {
-  let cardEl = null;
-  if (gameMode === "local") {
-    const idx = localState ? localState.seats.findIndex(function (s) { return s.role === role; }) : -1;
-    cardEl = idx >= 0 ? localStripEl.children[idx] : null;
-  } else {
-    cardEl = role === "player1" ? p1Card : (role === "player2" ? p2Card : null);
-  }
+  const stripEl = gameMode === "local" ? localStripEl : playerStripEl;
+  const cardEl = stripEl.querySelector('[data-role="' + role + '"]');
   if (!cardEl) return;
   const r = cardEl.getBoundingClientRect();
   const bubble = document.createElement("div");
@@ -1662,6 +1863,52 @@ function refreshAvatarSelection() {
     const isColor = el.dataset.color && !myAvatar.emoji && myAvatar.color === el.dataset.color;
     const isEmoji = el.dataset.emoji && myAvatar.emoji === el.dataset.emoji;
     el.classList.toggle("selected", !!(isColor || isEmoji));
+  });
+}
+
+/* ── Dice skin picker (cosmetic, local-only) ── */
+
+function loadDiceSkin() {
+  try {
+    const raw = localStorage.getItem("snl_dice");
+    if (raw && DICE_SKINS.some(function (s) { return s.id === raw; })) myDiceSkin = raw;
+  } catch {
+    myDiceSkin = "classic";
+  }
+}
+
+function applyDiceSkin(id) {
+  myDiceSkin = id;
+  DICE_SKINS.forEach(function (s) { diceEl.classList.remove("dice-skin-" + s.id); });
+  diceEl.classList.add("dice-skin-" + id);
+  try { localStorage.setItem("snl_dice", id); } catch { /* private mode */ }
+}
+
+function buildDiceSkinPicker() {
+  if (!diceSkinPickEl) return;
+  diceSkinPickEl.innerHTML = "";
+  DICE_SKINS.forEach(function (skin) {
+    const opt = document.createElement("button");
+    opt.type = "button";
+    opt.className = "dice-skin-opt dice-skin-" + skin.id + (myDiceSkin === skin.id ? " selected" : "");
+    opt.dataset.skin = skin.id;
+    opt.title = skin.name;
+    opt.setAttribute("aria-label", skin.name + " dice");
+    const pip = document.createElement("span");
+    pip.className = "dsp-pip";
+    opt.appendChild(pip);
+    opt.addEventListener("click", function () {
+      applyDiceSkin(skin.id);
+      refreshDiceSkinSelection();
+    });
+    diceSkinPickEl.appendChild(opt);
+  });
+}
+
+function refreshDiceSkinSelection() {
+  if (!diceSkinPickEl) return;
+  Array.prototype.forEach.call(diceSkinPickEl.children, function (el) {
+    el.classList.toggle("selected", el.dataset.skin === myDiceSkin);
   });
 }
 
@@ -1771,6 +2018,24 @@ function subscribeToRoom(roomId) {
         }
       }
     )
+    .on(
+      "postgres_changes",
+      {
+        event: "UPDATE",
+        schema: "public",
+        table: "room_players",
+        filter: "room_id=eq." + roomId
+      },
+      function (payload) {
+        if (!payload.new) return;
+        const i = currentPlayers.findIndex(function (p) { return p.id === payload.new.id; });
+        if (i >= 0) currentPlayers[i] = payload.new;
+        if (payload.new.forfeited) {
+          logMessage((payload.new.player_name || payload.new.role) + " left the game.");
+        }
+        updateUI();
+      }
+    )
     .on("presence", { event: "sync" }, handlePresenceSync)
     .on("broadcast", { event: "emote" }, function (payload) {
       const data = payload && payload.payload ? payload.payload : null;
@@ -1806,7 +2071,9 @@ function handleGameChange(payload) {
   const isRematch = prev && prev.winner && !incoming.winner;
   const positionsChanged = !prev ||
     incoming.player1_position !== prev.player1_position ||
-    incoming.player2_position !== prev.player2_position;
+    incoming.player2_position !== prev.player2_position ||
+    incoming.player3_position !== prev.player3_position ||
+    incoming.player4_position !== prev.player4_position;
   const isRoll = !isRematch && incoming.last_roll != null &&
     (positionsChanged || (prev && incoming.last_roll !== prev.last_roll && !incoming.winner));
 
@@ -1816,6 +2083,7 @@ function handleGameChange(payload) {
     prevPositions = {};
     animateMoves = false;
     winCelebrated = false;
+    pendingVictory = null;
     confetti.clear();
     setDiceFace(0);
     lastActionEl.textContent = "Roll to start";
@@ -1853,19 +2121,20 @@ function handlePresenceSync() {
   });
 
   const myRole = currentMembership?.role;
-  const oppRole = myRole === "player1" ? "player2" : "player1";
-  const oppNowOnline = onlineRoles.has(oppRole);
+  let othersOnline = false;
+  onlineRoles.forEach(function (r) { if (r !== myRole) othersOnline = true; });
 
-  if (currentPlayers.length >= 2 && opponentOnline && !oppNowOnline) {
-    showToast("Opponent disconnected");
+  if (currentPlayers.length >= 2 && opponentOnline && !othersOnline) {
+    showToast("A player disconnected");
   }
-  opponentOnline = oppNowOnline;
+  opponentOnline = othersOnline;
   updatePresenceIndicators(onlineRoles);
 }
 
 function updatePresenceIndicators(onlineRoles) {
-  p1OnlineEl.classList.toggle("online", onlineRoles.has("player1"));
-  p2OnlineEl.classList.toggle("online", onlineRoles.has("player2"));
+  playerStripEl.querySelectorAll(".p-online").forEach(function (el) {
+    el.classList.toggle("online", onlineRoles.has(el.getAttribute("data-role")));
+  });
 }
 
 /* ── Load room state ── */
@@ -1900,7 +2169,9 @@ async function loadRoomState(roomCode) {
   /* Sync positions so tokens don't bounce on load/rejoin */
   prevPositions = {
     player1: currentGame?.player1_position ?? 0,
-    player2: currentGame?.player2_position ?? 0
+    player2: currentGame?.player2_position ?? 0,
+    player3: currentGame?.player3_position ?? 0,
+    player4: currentGame?.player4_position ?? 0
   };
 
   /* If the game is already won on load (rejoin/refresh), don't replay the
@@ -1926,6 +2197,9 @@ async function boot() {
   setDiceFace(0);
   loadAvatar();
   buildAvatarPicker();
+  loadDiceSkin();
+  applyDiceSkin(myDiceSkin);
+  buildDiceSkinPicker();
   buildEmoteBar();
 
   try {
