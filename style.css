@@ -1566,6 +1566,103 @@ body.victory-slowmo::after {
 .dice-skin-opt.dice-skin-wood { background: linear-gradient(150deg, #d8a566, #a9763f); }
 .dice-skin-opt.dice-skin-wood .dsp-pip { background: #fff3df; }
 
+/* ═══════════════════ STRIP / FORFEIT / START PEN / STANDINGS ═══════════════════ */
+
+/* Wrap 3-4 cards onto two rows (online strip; local already wraps). */
+.player-strip.wrap { flex-wrap: wrap; }
+.player-strip.wrap .p-card { flex: 1 1 40%; }
+
+/* A player who left the game. */
+.p-card.forfeited {
+  opacity: 0.5;
+  border-style: dashed;
+}
+.p-card.forfeited .p-name { text-decoration: line-through; }
+
+/* Start pen — shows pieces that haven't moved yet, on the board frame. */
+.start-pen {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: 92%;
+  padding: 5px 10px;
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  border: 1.5px solid var(--border);
+  border-radius: 99px;
+  box-shadow: var(--shadow-sm);
+  z-index: 14;
+  pointer-events: none;
+}
+.start-pen-label {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.start-chip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.start-chip .token { position: static; }
+.token-label {
+  font-size: 0.66rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+/* Final standings in the win overlay. */
+.win-standings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 2px 0 22px;
+  text-align: left;
+}
+.standing-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  font-size: 0.8rem;
+}
+.standing-row.winner {
+  background: var(--gold-soft);
+  font-weight: 700;
+}
+.standing-rank {
+  font-weight: 700;
+  color: var(--muted);
+  min-width: 22px;
+}
+.standing-dot {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+.standing-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.standing-pos {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.74rem;
+}
+
 /* ═══════════════════ ACCESSIBILITY ═══════════════════ */
 
 /* [REDUCED MOTION] Gracefully degrade all animations */

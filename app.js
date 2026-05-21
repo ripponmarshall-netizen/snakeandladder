@@ -41,6 +41,7 @@ const toastTextEl = document.getElementById("toastText");
 const winOverlayEl = document.getElementById("winOverlay");
 const winTitleEl = document.getElementById("winTitle");
 const winMessageEl = document.getElementById("winMessage");
+const winStandingsEl = document.getElementById("winStandings");
 const rematchBtn = document.getElementById("rematchBtn");
 const leaveBtn = document.getElementById("leaveBtn");
 const copyCodeBtn = document.getElementById("copyCodeBtn");
@@ -57,10 +58,15 @@ const powerTrayEl = document.getElementById("powerTray");
 
 const avatarPickEl = document.getElementById("avatarPick");
 const diceSkinPickEl = document.getElementById("diceSkinPick");
+const diceSkinPickGameEl = document.getElementById("diceSkinPickGame");
 const localPlayBtn = document.getElementById("localPlayBtn");
 const themeBtn = document.getElementById("themeBtn");
-const themeBtnGame = document.getElementById("themeBtnGame");
 const statsBtn = document.getElementById("statsBtn");
+
+const settingsOverlayEl = document.getElementById("settingsOverlay");
+const settingsBtnGame = document.getElementById("settingsBtnGame");
+const settingsCloseBtn = document.getElementById("settingsCloseBtn");
+const settingsThemeBtn = document.getElementById("settingsThemeBtn");
 
 const localSetupEl = document.getElementById("localSetup");
 const lsPlayersEl = document.getElementById("lsPlayers");
@@ -99,10 +105,12 @@ let busyAnimating = false;
 let pendingAnims = 0;
 let myAvatar = { color: null, emoji: null };
 let turnTimerHandle = null;
+let timerRole = null; // role the turn-timer is currently counting down for
 let diceRolling = false;
 let pendingVictory = null; // winner seat whose victory-run is animating (overlay deferred)
 
 const AI_THINK_MS = 850;
+const ONLINE_TURN_SECONDS = 30; // client-side per-turn countdown for online play
 const DEFAULT_SEAT_COLORS = ["#3d8bff", "#ff5fa2", "#18c2a8", "#f5b430"];
 const AVATAR_EMOJIS = ["🐱", "🐶", "🦊", "🐼", "🚀", "⭐"];
 const EMOTES = ["👍", "😂", "😮", "🎉", "😭", "🔥"];
@@ -606,12 +614,17 @@ async function animateTokenMove(fromSquare, toSquare, seat, move) {
   await raf();
   if (activeGhost !== ghost) { if (isWinningMove) revealWin(seat); return; }
 
-  /* [VICTORY RUN] Dramatic slow-motion dash to 100, then a big splash. */
+  /* [VICTORY RUN] Dramatic slow-motion dash to 100, then a big splash.
+     revealWin runs in finally so the overlay is never left stuck hidden. */
   if (isWinningMove) {
-    await animateVictoryRun(fromSquare, ghost, seat);
-    if (activeGhost === ghost) { ghost.remove(); activeGhost = null; }
-    showRealToken(toSquare, idx);
-    revealWin(seat);
+    try {
+      await animateVictoryRun(fromSquare, ghost, seat);
+    } finally {
+      if (activeGhost === ghost) { ghost.remove(); activeGhost = null; }
+      document.body.classList.remove("victory-slowmo");
+      showRealToken(toSquare, idx);
+      revealWin(seat);
+    }
     return;
   }
 
@@ -840,7 +853,8 @@ function getSeats() {
       position: currentGame ? (currentGame[role + "_position"] || 0) : 0,
       color: avatarColorFor(role, i), emoji: avatarEmojiFor(role),
       name: p ? p.player_name : "Waiting…", kind: "human",
-      present: !!p
+      present: !!p,
+      forfeited: !!(p && p.forfeited)
     });
   }
   return out;
@@ -949,7 +963,7 @@ function renderBoard() {
         cell.appendChild(star);
       }
 
-      const here = seats.filter(function (s) { return s.position === number; });
+      const here = seats.filter(function (s) { return s.position === number && !s.forfeited; });
       if (here.length) {
         const wrap = document.createElement("div");
         wrap.className = "tokens";
@@ -957,6 +971,8 @@ function renderBoard() {
           const tk = document.createElement("div");
           tk.className = "token seat-" + s.idx;
           tk.style.setProperty("--tok", s.color);
+          tk.title = s.name;
+          tk.setAttribute("aria-label", s.name + " on square " + number);
           if (s.emoji) {
             tk.classList.add("token-emoji");
             tk.textContent = s.emoji;
@@ -982,7 +998,57 @@ function renderBoard() {
   seats.forEach(function (s) { prevPositions[s.role] = s.position; });
   animateMoves = false;
 
+  renderStartPen(seats);
   renderOverlay();
+}
+
+/* Show pieces that haven't started yet (position 0) in a small pen on the board
+   frame, so players can see their token before their first move. Excludes
+   forfeited players and online seats that are still unfilled. */
+function renderStartPen(seats) {
+  const frame = boardEl.closest(".board-frame");
+  if (!frame) return;
+  let pen = frame.querySelector(".start-pen");
+
+  const atStart = seats.filter(function (s) {
+    return (s.position || 0) === 0 && !s.forfeited && s.present !== false;
+  });
+
+  if (!atStart.length) {
+    if (pen) pen.remove();
+    return;
+  }
+  if (!pen) {
+    pen = document.createElement("div");
+    pen.className = "start-pen";
+    frame.appendChild(pen);
+  }
+  pen.innerHTML = "";
+
+  const label = document.createElement("div");
+  label.className = "start-pen-label";
+  label.textContent = "Start";
+  pen.appendChild(label);
+
+  atStart.forEach(function (s) {
+    const chip = document.createElement("div");
+    chip.className = "start-chip";
+
+    const tk = document.createElement("div");
+    tk.className = "token seat-" + s.idx;
+    tk.style.setProperty("--tok", s.color);
+    tk.title = s.name;
+    tk.setAttribute("aria-label", s.name + " at start");
+    if (s.emoji) { tk.classList.add("token-emoji"); tk.textContent = s.emoji; }
+
+    const nm = document.createElement("span");
+    nm.className = "token-label";
+    nm.textContent = s.name;
+
+    chip.appendChild(tk);
+    chip.appendChild(nm);
+    pen.appendChild(chip);
+  });
 }
 
 function updateUI() {
@@ -1045,6 +1111,46 @@ function celebrateWinOnce(winnerSeat) {
   recordResult(winnerSeat);
 }
 
+/* Build the final-standings list in the win overlay: winner first, then the rest
+   by board position (descending), with forfeited players last. */
+function renderStandings(seats, winnerRole) {
+  if (!winStandingsEl) return;
+  const ranked = seats.slice().sort(function (a, b) {
+    if (a.role === winnerRole) return -1;
+    if (b.role === winnerRole) return 1;
+    if (!!a.forfeited !== !!b.forfeited) return a.forfeited ? 1 : -1;
+    return (b.position || 0) - (a.position || 0);
+  });
+
+  winStandingsEl.innerHTML = "";
+  ranked.forEach(function (s, i) {
+    const row = document.createElement("div");
+    row.className = "standing-row" + (s.role === winnerRole ? " winner" : "");
+
+    const rank = document.createElement("span");
+    rank.className = "standing-rank";
+    rank.textContent = "#" + (i + 1);
+
+    const dot = document.createElement("span");
+    dot.className = "standing-dot p-dot";
+    applyDotAvatar(dot, s);
+
+    const name = document.createElement("span");
+    name.className = "standing-name";
+    name.textContent = s.name + (s.kind === "cpu" ? " (CPU)" : "");
+
+    const pos = document.createElement("span");
+    pos.className = "standing-pos";
+    pos.textContent = s.forfeited ? "Left" : (s.position === 100 ? "🏁 100" : "Sq " + (s.position || 0));
+
+    row.appendChild(rank);
+    row.appendChild(dot);
+    row.appendChild(name);
+    row.appendChild(pos);
+    winStandingsEl.appendChild(row);
+  });
+}
+
 function recordResult(winnerSeat) {
   const board = currentGame ? findBoardById(currentGame.board_id).name : "—";
   if (gameMode === "local") {
@@ -1069,8 +1175,8 @@ function updateOnlineUI(seats) {
   refreshRoomBtn.style.display = "";
   emoteBarEl.classList.remove("hidden");
   powerTrayEl.classList.add("hidden");
-  turnTimerEl.classList.add("hidden");
 
+  playerStripEl.classList.toggle("wrap", seats.length > 2);
   renderStrip(playerStripEl, seats, {
     currentTurn: currentGame?.current_turn,
     winner: currentGame?.winner,
@@ -1097,6 +1203,7 @@ function updateOnlineUI(seats) {
     winMessageEl.textContent = winnerPos === 100
       ? winnerName + " reached square 100!"
       : winnerName + " wins — last player standing.";
+    renderStandings(seats, currentGame.winner);
     if (!pendingVictory) {
       winOverlayEl.classList.remove("hidden");
       celebrateWinOnce({ role: currentGame.winner, name: winnerName });
@@ -1126,6 +1233,13 @@ function updateOnlineUI(seats) {
   }
 
   diceEl.classList.toggle("your-turn", !!isMyTurn);
+
+  /* Online turn timer: start once when it becomes my turn, clear otherwise. */
+  if (isMyTurn) {
+    if (timerRole !== currentGame.current_turn) startTurnTimer();
+  } else if (gameMode === "online") {
+    clearTurnTimer();
+  }
 }
 
 function updateLocalUI(seats) {
@@ -1154,6 +1268,7 @@ function updateLocalUI(seats) {
     turnBannerEl.classList.add("state-win");
     winTitleEl.textContent = ws.kind === "cpu" ? "Defeat" : "Victory!";
     winMessageEl.textContent = ws.name + " reached square 100!";
+    renderStandings(seats, winner);
     if (!pendingVictory) {
       winOverlayEl.classList.remove("hidden");
       celebrateWinOnce(ws);
@@ -1184,11 +1299,13 @@ function renderStrip(targetEl, seats, opts) {
   const o = opts || {};
   targetEl.innerHTML = "";
   seats.forEach(function (s) {
-    const isActive = o.currentTurn === s.role && !o.winner;
+    const forfeited = !!s.forfeited;
+    const isActive = o.currentTurn === s.role && !o.winner && !forfeited;
     const waiting = o.online && s.present === false;
 
     const card = document.createElement("div");
-    card.className = "p-card" + (isActive ? " active spotlight" : "") + (waiting ? " waiting" : "");
+    card.className = "p-card" + (isActive ? " active spotlight" : "") +
+      (waiting ? " waiting" : "") + (forfeited ? " forfeited" : "");
     card.setAttribute("data-role", s.role);
 
     const dot = document.createElement("div");
@@ -1199,17 +1316,17 @@ function renderStrip(targetEl, seats, opts) {
     info.className = "p-info";
     const name = document.createElement("span");
     name.className = "p-name";
-    name.textContent = s.name + (s.kind === "cpu" ? " (CPU)" : "");
+    name.textContent = s.name + (s.kind === "cpu" ? " (CPU)" : "") + (forfeited ? " (left)" : "");
     const pos = document.createElement("span");
     pos.className = "p-pos";
-    pos.textContent = s.position > 0 ? "Sq " + s.position : (waiting ? "—" : "Start");
+    pos.textContent = forfeited ? "Left" : (s.position > 0 ? "Sq " + s.position : (waiting ? "—" : "Start"));
     info.appendChild(name);
     info.appendChild(pos);
 
     card.appendChild(dot);
     card.appendChild(info);
 
-    if (o.online) {
+    if (o.online && !forfeited) {
       const onl = document.createElement("span");
       onl.className = "p-online";
       onl.setAttribute("data-role", s.role);
@@ -1586,32 +1703,54 @@ function clearTurnTimer() {
     cancelAnimationFrame(turnTimerHandle);
     turnTimerHandle = null;
   }
+  timerRole = null;
   turnTimerEl.classList.add("hidden");
 }
 
+/* Per-turn countdown for both modes. Local: uses the configured turnTimer and
+   auto-rolls for a human seat. Online: a fixed countdown shown to the active
+   player, who auto-rolls on expiry (the server validates the turn regardless). */
 function startTurnTimer() {
   clearTurnTimer();
-  if (gameMode !== "local" || !localState || localState.winner) return;
-  const secs = localState.config.turnTimer;
-  if (!secs || !localGame.isHumanTurn(localState)) return;
 
-  const role = localState.current_turn;
+  let secs, role, onExpire;
+  if (gameMode === "local") {
+    if (!localState || localState.winner) return;
+    secs = localState.config.turnTimer;
+    if (!secs || !localGame.isHumanTurn(localState)) return;
+    role = localState.current_turn;
+    onExpire = rollLocal;
+  } else {
+    if (!currentGame || currentGame.winner) return;
+    const roomFull = currentPlayers.length >= onlineMaxPlayers();
+    const myTurn = roomFull && currentMembership?.role === currentGame.current_turn;
+    if (!myTurn) return;
+    secs = ONLINE_TURN_SECONDS;
+    role = currentGame.current_turn;
+    onExpire = function () { rollDice().catch(function (e) { console.error(e); }); };
+  }
+
+  timerRole = role;
   const end = performance.now() + secs * 1000;
   turnTimerEl.classList.remove("hidden");
   turnTimerBarEl.style.transition = "none";
 
   function tick() {
-    if (gameMode !== "local" || !localState || localState.winner || localState.current_turn !== role) {
-      clearTurnTimer();
-      return;
-    }
+    const curTurn = gameMode === "local"
+      ? (localState && localState.current_turn)
+      : (currentGame && currentGame.current_turn);
+    const won = gameMode === "local"
+      ? (localState && localState.winner)
+      : (currentGame && currentGame.winner);
+    if (won || curTurn !== role) { clearTurnTimer(); return; }
+
     const remain = end - performance.now();
     const frac = Math.max(0, remain / (secs * 1000));
     turnTimerBarEl.style.transform = "scaleX(" + frac + ")";
     turnTimerBarEl.classList.toggle("low", frac < 0.33);
     if (remain <= 0) {
       clearTurnTimer();
-      rollLocal();
+      onExpire();
       return;
     }
     turnTimerHandle = requestAnimationFrame(tick);
@@ -1885,30 +2024,34 @@ function applyDiceSkin(id) {
 }
 
 function buildDiceSkinPicker() {
-  if (!diceSkinPickEl) return;
-  diceSkinPickEl.innerHTML = "";
-  DICE_SKINS.forEach(function (skin) {
-    const opt = document.createElement("button");
-    opt.type = "button";
-    opt.className = "dice-skin-opt dice-skin-" + skin.id + (myDiceSkin === skin.id ? " selected" : "");
-    opt.dataset.skin = skin.id;
-    opt.title = skin.name;
-    opt.setAttribute("aria-label", skin.name + " dice");
-    const pip = document.createElement("span");
-    pip.className = "dsp-pip";
-    opt.appendChild(pip);
-    opt.addEventListener("click", function () {
-      applyDiceSkin(skin.id);
-      refreshDiceSkinSelection();
+  [diceSkinPickEl, diceSkinPickGameEl].forEach(function (container) {
+    if (!container) return;
+    container.innerHTML = "";
+    DICE_SKINS.forEach(function (skin) {
+      const opt = document.createElement("button");
+      opt.type = "button";
+      opt.className = "dice-skin-opt dice-skin-" + skin.id + (myDiceSkin === skin.id ? " selected" : "");
+      opt.dataset.skin = skin.id;
+      opt.title = skin.name;
+      opt.setAttribute("aria-label", skin.name + " dice");
+      const pip = document.createElement("span");
+      pip.className = "dsp-pip";
+      opt.appendChild(pip);
+      opt.addEventListener("click", function () {
+        applyDiceSkin(skin.id);
+        refreshDiceSkinSelection();
+      });
+      container.appendChild(opt);
     });
-    diceSkinPickEl.appendChild(opt);
   });
 }
 
 function refreshDiceSkinSelection() {
-  if (!diceSkinPickEl) return;
-  Array.prototype.forEach.call(diceSkinPickEl.children, function (el) {
-    el.classList.toggle("selected", el.dataset.skin === myDiceSkin);
+  [diceSkinPickEl, diceSkinPickGameEl].forEach(function (container) {
+    if (!container) return;
+    Array.prototype.forEach.call(container.children, function (el) {
+      el.classList.toggle("selected", el.dataset.skin === myDiceSkin);
+    });
   });
 }
 
@@ -1917,7 +2060,9 @@ function refreshDiceSkinSelection() {
 function updateThemeButtons() {
   const t = theme.getTheme();
   const meta = theme.THEMES.find(function (x) { return x.id === t; });
-  if (themeBtn) themeBtn.textContent = "Theme: " + (meta ? meta.name : t);
+  const label = "Theme: " + (meta ? meta.name : t);
+  if (themeBtn) themeBtn.textContent = label;
+  if (settingsThemeBtn) settingsThemeBtn.textContent = label;
 }
 
 function cycleTheme() {
@@ -2177,6 +2322,7 @@ async function loadRoomState(roomCode) {
   /* If the game is already won on load (rejoin/refresh), don't replay the
      celebration — treat it as already shown. */
   winCelebrated = !!currentGame?.winner;
+  pendingVictory = null;
 
   /* Reset presence baseline; the channel re-tracks on (re)subscribe. */
   presenceState = {};
@@ -2247,7 +2393,7 @@ rollDiceBtn.addEventListener("click", async function () {
 
 function updateMuteButton() {
   const muted = sfx.isMuted();
-  muteBtn.textContent = muted ? "🔇" : "🔊";
+  muteBtn.textContent = muted ? "🔇 Muted" : "🔊 Sound on";
   muteBtn.setAttribute("aria-pressed", muted ? "true" : "false");
   muteBtn.setAttribute("aria-label", muted ? "Unmute sound" : "Mute sound");
 }
@@ -2305,7 +2451,13 @@ lsCancelBtn.addEventListener("click", function () {
 });
 
 themeBtn.addEventListener("click", cycleTheme);
-themeBtnGame.addEventListener("click", cycleTheme);
+settingsThemeBtn.addEventListener("click", cycleTheme);
+settingsBtnGame.addEventListener("click", function () {
+  settingsOverlayEl.classList.remove("hidden");
+});
+settingsCloseBtn.addEventListener("click", function () {
+  settingsOverlayEl.classList.add("hidden");
+});
 
 statsBtn.addEventListener("click", openStats);
 statsCloseBtn.addEventListener("click", function () {
