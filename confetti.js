@@ -116,6 +116,39 @@ export function burst() {
   start();
 }
 
+/* Big radial splash at a screen coordinate — used on a victory landing (100).
+   Mixes the winner's seat colour with gold/white for a celebratory burst. */
+export function splash(x, y, color) {
+  if (reduceMotion()) return;
+  ensureCanvas();
+  const accents = [color || "#f5b430", "#ffffff", "#f5b430", color || "#3d8bff"];
+  for (let i = 0; i < 80; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 8 + Math.random() * 8;
+    spawn(
+      x, y,
+      Math.cos(angle) * speed,
+      Math.sin(angle) * speed - 3,
+      6 + Math.random() * 7,
+      70 + Math.random() * 50,
+      { gravity: 0.15, color: accents[i % accents.length] }
+    );
+  }
+  for (let i = 0; i < 18; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 3 + Math.random() * 6;
+    spawn(
+      x, y,
+      Math.cos(angle) * speed,
+      Math.sin(angle) * speed - 2,
+      3 + Math.random() * 3,
+      40 + Math.random() * 30,
+      { gravity: 0.06, round: true, color: "#ffffff" }
+    );
+  }
+  start();
+}
+
 /* Small localized sparkle at a screen coordinate — used on a ladder landing. */
 export function sparkle(x, y) {
   if (reduceMotion()) return;

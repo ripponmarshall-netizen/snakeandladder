@@ -133,3 +133,18 @@ export function playWin() {
     tone({ type: "triangle", freq: f, duration: 0.32, gain: 0.16, delay: i * 0.11 });
   });
 }
+
+/* Victory run — a rising whoosh with a light drumroll under it, building
+   tension as the token dashes to the finish. */
+export function playVictoryRun() {
+  tone({ type: "sine", freq: 220, toFreq: 880, duration: 1.1, gain: 0.10 });
+  for (let i = 0; i < 8; i++) {
+    tone({ type: "triangle", freq: 140, duration: 0.05, gain: 0.06, delay: i * 0.09 });
+  }
+}
+
+/* Bonk — a low thud when a roll overshoots 100 and hits the wall. */
+export function playBonk() {
+  tone({ type: "square", freq: 180, toFreq: 70, duration: 0.18, gain: 0.12 });
+  tone({ type: "sine", freq: 90, toFreq: 50, duration: 0.22, gain: 0.10, delay: 0.02 });
+}
