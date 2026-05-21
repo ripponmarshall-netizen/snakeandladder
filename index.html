@@ -92,6 +92,26 @@
     </div>
   </div>
 
+  <!-- SETTINGS -->
+  <div id="settingsOverlay" class="modal-overlay hidden" role="dialog" aria-labelledby="settingsTitle">
+    <div class="modal-box">
+      <h2 id="settingsTitle">Settings</h2>
+
+      <label>Theme</label>
+      <button id="settingsThemeBtn" class="btn btn-outline btn-block">Theme: Light</button>
+
+      <label>Sound</label>
+      <button id="muteBtn" class="btn btn-outline btn-block" aria-pressed="false">&#128266; Sound on</button>
+
+      <label>Dice skin</label>
+      <div id="diceSkinPickGame" class="dice-skin-pick" role="group" aria-label="Choose your dice skin"></div>
+
+      <div class="modal-actions">
+        <button id="settingsCloseBtn" class="btn btn-primary btn-block">Close</button>
+      </div>
+    </div>
+  </div>
+
   <!-- STATS -->
   <div id="statsOverlay" class="modal-overlay hidden" role="dialog" aria-labelledby="statsTitle">
     <div class="modal-box">
@@ -109,8 +129,7 @@
     <header class="room-bar">
       <span class="room-tag">ROOM</span>
       <span id="roomCodeDisplay" class="room-code">------</span>
-      <button id="themeBtnGame" class="bar-btn" aria-label="Change theme">Theme</button>
-      <button id="muteBtn" class="bar-btn" aria-label="Toggle sound" aria-pressed="false">&#128266;</button>
+      <button id="settingsBtnGame" class="bar-btn" aria-label="Settings">&#9881;</button>
       <button id="copyCodeBtn" class="bar-btn" aria-label="Copy room code">Copy</button>
       <button id="refreshRoomBtn" class="bar-btn" aria-label="Refresh room state">Refresh</button>
       <button id="leaveRoomBtn" class="bar-btn" aria-label="Leave room">Leave</button>
@@ -161,6 +180,7 @@
       <div class="win-crown" aria-hidden="true">&#128081;</div>
       <h2 id="winTitle">Victory!</h2>
       <p id="winMessage">&mdash;</p>
+      <div id="winStandings" class="win-standings"></div>
       <div class="win-actions">
         <button id="rematchBtn" class="btn btn-primary btn-block">Rematch</button>
         <button id="leaveBtn" class="btn btn-outline btn-block">Leave</button>
