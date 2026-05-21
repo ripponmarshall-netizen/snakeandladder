@@ -1,6 +1,9 @@
 import { boards } from "./boards.js";
 import { supabase, ensureSignedIn, getCurrentUser } from "./supabase.js";
 import { getCellNumber, cellToSVG, resolveMove, validateBoardSet } from "./gameLogic.js";
+import * as sfx from "./sound.js";
+import * as haptics from "./haptics.js";
+import * as confetti from "./confetti.js";
 
 /* ── DOM refs ── */
 
@@ -43,6 +46,7 @@ const rematchBtn = document.getElementById("rematchBtn");
 const leaveBtn = document.getElementById("leaveBtn");
 const copyCodeBtn = document.getElementById("copyCodeBtn");
 const leaveRoomBtn = document.getElementById("leaveRoomBtn");
+const muteBtn = document.getElementById("muteBtn");
 const p1OnlineEl = document.getElementById("p1Online");
 const p2OnlineEl = document.getElementById("p2Online");
 
@@ -60,6 +64,7 @@ let prevP2Pos = 0;
 let animateMoves = false;
 let presenceState = {};
 let opponentOnline = false;
+let winCelebrated = false;
 
 const DICE_FACES = ["", "\u2680", "\u2681", "\u2682", "\u2683", "\u2684", "\u2685"];
 
@@ -94,78 +99,85 @@ function drawSnake(svg, start, end, NS) {
   }
   /* --- End unchanged path calculation --- */
 
-  /* [SNAKE TEXTURE] Layered body group for refined depth */
+  /* [SNAKE TEXTURE] Layered body group — bolder, palette-driven */
   const g = document.createElementNS(NS, "g");
 
-  /* Soft shadow — adds subtle depth behind the body */
+  /* Soft shadow — adds depth behind the body */
   const shadow = document.createElementNS(NS, "path");
   shadow.setAttribute("d", d);
-  shadow.setAttribute("stroke", "#b33030");
-  shadow.setAttribute("stroke-width", "2.6");
+  shadow.setAttribute("style", "stroke: var(--ink)");
+  shadow.setAttribute("stroke-width", "3.4");
   shadow.setAttribute("fill", "none");
-  shadow.setAttribute("opacity", "0.12");
+  shadow.setAttribute("opacity", "0.1");
   shadow.setAttribute("stroke-linecap", "round");
   g.appendChild(shadow);
 
   /* Main body stroke */
   const body = document.createElementNS(NS, "path");
   body.setAttribute("d", d);
-  body.setAttribute("stroke", "#e25555");
-  body.setAttribute("stroke-width", "1.6");
+  body.setAttribute("style", "stroke: var(--red)");
+  body.setAttribute("stroke-width", "2.6");
   body.setAttribute("fill", "none");
-  body.setAttribute("opacity", "0.5");
+  body.setAttribute("opacity", "0.9");
   body.setAttribute("stroke-linecap", "round");
   g.appendChild(body);
 
-  /* Scale pattern — dashed overlay for gentle patterning */
+  /* Scale pattern — dashed overlay for patterning */
   const scales = document.createElementNS(NS, "path");
   scales.setAttribute("d", d);
-  scales.setAttribute("stroke", "#c04040");
-  scales.setAttribute("stroke-width", "0.9");
+  scales.setAttribute("stroke", "#fff");
+  scales.setAttribute("stroke-width", "1.0");
   scales.setAttribute("fill", "none");
-  scales.setAttribute("opacity", "0.18");
+  scales.setAttribute("opacity", "0.35");
   scales.setAttribute("stroke-linecap", "round");
   scales.setAttribute("stroke-dasharray", "1.2 2.8");
   g.appendChild(scales);
 
-  /* Highlight — lighter line for shading contour */
+  /* Highlight — lighter contour line */
   const hl = document.createElementNS(NS, "path");
   hl.setAttribute("d", d);
-  hl.setAttribute("stroke", "#ff9999");
-  hl.setAttribute("stroke-width", "0.4");
+  hl.setAttribute("stroke", "#ffd1d6");
+  hl.setAttribute("stroke-width", "0.6");
   hl.setAttribute("fill", "none");
-  hl.setAttribute("opacity", "0.2");
+  hl.setAttribute("opacity", "0.5");
   hl.setAttribute("stroke-linecap", "round");
   g.appendChild(hl);
 
   svg.appendChild(g);
 
-  /* [SNAKE HEAD] 3D head with shadow and highlight */
+  /* [SNAKE HEAD] bold head with shadow, highlight, and a little eye */
   const headG = document.createElementNS(NS, "g");
 
   const headShadow = document.createElementNS(NS, "circle");
   headShadow.setAttribute("cx", (start.x + 0.3).toFixed(1));
   headShadow.setAttribute("cy", (start.y + 0.3).toFixed(1));
-  headShadow.setAttribute("r", "2.0");
-  headShadow.setAttribute("fill", "#8b1a1a");
-  headShadow.setAttribute("opacity", "0.18");
+  headShadow.setAttribute("r", "2.3");
+  headShadow.setAttribute("style", "fill: var(--ink)");
+  headShadow.setAttribute("opacity", "0.15");
   headG.appendChild(headShadow);
 
   const head = document.createElementNS(NS, "circle");
   head.setAttribute("cx", start.x.toFixed(1));
   head.setAttribute("cy", start.y.toFixed(1));
-  head.setAttribute("r", "1.8");
-  head.setAttribute("fill", "#dc2626");
-  head.setAttribute("opacity", "0.6");
+  head.setAttribute("r", "2.1");
+  head.setAttribute("style", "fill: var(--red)");
+  head.setAttribute("opacity", "0.95");
   headG.appendChild(head);
 
-  const headHL = document.createElementNS(NS, "circle");
-  headHL.setAttribute("cx", (start.x - 0.4).toFixed(1));
-  headHL.setAttribute("cy", (start.y - 0.4).toFixed(1));
-  headHL.setAttribute("r", "0.55");
-  headHL.setAttribute("fill", "#ff9999");
-  headHL.setAttribute("opacity", "0.35");
-  headG.appendChild(headHL);
+  /* Eye — white sclera + dark pupil for character */
+  const eye = document.createElementNS(NS, "circle");
+  eye.setAttribute("cx", (start.x - 0.5).toFixed(1));
+  eye.setAttribute("cy", (start.y - 0.6).toFixed(1));
+  eye.setAttribute("r", "0.7");
+  eye.setAttribute("fill", "#fff");
+  headG.appendChild(eye);
+
+  const pupil = document.createElementNS(NS, "circle");
+  pupil.setAttribute("cx", (start.x - 0.4).toFixed(1));
+  pupil.setAttribute("cy", (start.y - 0.5).toFixed(1));
+  pupil.setAttribute("r", "0.32");
+  pupil.setAttribute("style", "fill: var(--ink)");
+  headG.appendChild(pupil);
 
   svg.appendChild(headG);
 
@@ -173,9 +185,9 @@ function drawSnake(svg, start, end, NS) {
   const tail = document.createElementNS(NS, "circle");
   tail.setAttribute("cx", end.x.toFixed(1));
   tail.setAttribute("cy", end.y.toFixed(1));
-  tail.setAttribute("r", "0.7");
-  tail.setAttribute("fill", "#e25555");
-  tail.setAttribute("opacity", "0.3");
+  tail.setAttribute("r", "0.9");
+  tail.setAttribute("style", "fill: var(--red)");
+  tail.setAttribute("opacity", "0.6");
   svg.appendChild(tail);
 }
 
@@ -188,7 +200,7 @@ function drawLadder(svg, start, end, NS) {
   const off = 1.4;
 
   const g = document.createElementNS(NS, "g");
-  g.setAttribute("opacity", "0.5");
+  g.setAttribute("opacity", "0.9");
 
   for (let s = -1; s <= 1; s += 2) {
     const rail = document.createElementNS(NS, "line");
@@ -196,10 +208,22 @@ function drawLadder(svg, start, end, NS) {
     rail.setAttribute("y1", (start.y + py * off * s).toFixed(1));
     rail.setAttribute("x2", (end.x + px * off * s).toFixed(1));
     rail.setAttribute("y2", (end.y + py * off * s).toFixed(1));
-    rail.setAttribute("stroke", "#22a352");
-    rail.setAttribute("stroke-width", "0.9");
+    rail.setAttribute("style", "stroke: var(--teal)");
+    rail.setAttribute("stroke-width", "1.3");
     rail.setAttribute("stroke-linecap", "round");
     g.appendChild(rail);
+
+    /* Highlight line for a rounded 3D rail look */
+    const railHL = document.createElementNS(NS, "line");
+    railHL.setAttribute("x1", (start.x + px * off * s - 0.3).toFixed(1));
+    railHL.setAttribute("y1", (start.y + py * off * s - 0.3).toFixed(1));
+    railHL.setAttribute("x2", (end.x + px * off * s - 0.3).toFixed(1));
+    railHL.setAttribute("y2", (end.y + py * off * s - 0.3).toFixed(1));
+    railHL.setAttribute("stroke", "#bdf5e8");
+    railHL.setAttribute("stroke-width", "0.5");
+    railHL.setAttribute("stroke-linecap", "round");
+    railHL.setAttribute("opacity", "0.8");
+    g.appendChild(railHL);
   }
 
   const rungs = Math.max(2, Math.round(dist / 7));
@@ -212,8 +236,8 @@ function drawLadder(svg, start, end, NS) {
     rung.setAttribute("y1", (ry + py * off).toFixed(1));
     rung.setAttribute("x2", (rx - px * off).toFixed(1));
     rung.setAttribute("y2", (ry - py * off).toFixed(1));
-    rung.setAttribute("stroke", "#22a352");
-    rung.setAttribute("stroke-width", "0.7");
+    rung.setAttribute("style", "stroke: var(--teal)");
+    rung.setAttribute("stroke-width", "1.0");
     rung.setAttribute("stroke-linecap", "round");
     g.appendChild(rung);
   }
@@ -308,14 +332,46 @@ function errorMessage(error, fallback) {
   return error.message || error.hint || error.details || fallback || "Something went wrong.";
 }
 
+/* Tumble counter — a newer roll cancels any in-flight tumble's pending frames so
+   the dice never settles on a stale value. */
+let diceTumbleId = 0;
+
+/* Roll the dice through several random faces, decelerating, then settle on the
+   authoritative `value` (the server's last_roll — never a random pick). */
 function animateDice(value) {
-  diceCharEl.textContent = DICE_FACES[value] || "?";
+  const face = DICE_FACES[value] || "?";
+  diceTumbleId += 1;
+  const myId = diceTumbleId;
+
   diceEl.classList.remove("rolling");
   void diceEl.offsetWidth;
   diceEl.classList.add("rolling");
+
+  /* Reduced motion: skip the tumble, show the result immediately. */
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    diceCharEl.textContent = face;
+    return;
+  }
+
+  sfx.playRoll();
+
+  /* Decelerating cadence: quick at first, easing out before the final settle. */
+  const delays = [55, 60, 70, 85, 105, 130, 160];
+
+  function step(i) {
+    if (myId !== diceTumbleId) return; // superseded by a newer roll
+    if (i >= delays.length) {
+      diceCharEl.textContent = face; // authoritative result
+      return;
+    }
+    diceCharEl.textContent = DICE_FACES[1 + ((Math.random() * 6) | 0)];
+    setTimeout(function () { step(i + 1); }, delays[i]);
+  }
+  step(0);
 }
 
-/* Shake the dice for immediate feedback while the server resolves the roll. */
+/* Quick rattle for immediate feedback while the server resolves the roll; the
+   real tumble takes over once the authoritative value arrives. */
 function shakeDice() {
   diceEl.classList.remove("rolling");
   void diceEl.offsetWidth;
@@ -358,17 +414,23 @@ function hopTo(el, targetLeft, targetTop, duration) {
       const t = Math.min((now - startTime) / duration, 1);
       /* Cubic ease-out for controlled deceleration */
       const ease = 1 - Math.pow(1 - t, 3);
-      /* Parabolic arc: peaks at midpoint, 6px height */
-      const arc = -6 * Math.sin(t * Math.PI);
+      /* Parabolic arc: peaks at midpoint, ~11px height for a livelier hop */
+      const lift = Math.sin(t * Math.PI);
+      const arc = -11 * lift;
+      /* Squash-and-stretch: stretched at apex, squashed on the ground */
+      const sx = 1 - 0.12 * lift;
+      const sy = 1 + 0.16 * lift;
 
       el.style.left = (startLeft + dLeft * ease) + "px";
       el.style.top = (startTop + dTop * ease + arc) + "px";
+      el.style.transform = "scale(" + sx.toFixed(3) + "," + sy.toFixed(3) + ")";
 
       if (t < 1) {
         requestAnimationFrame(frame);
       } else {
         el.style.left = targetLeft + "px";
         el.style.top = targetTop + "px";
+        el.style.transform = "scale(1)";
         resolve();
       }
     }
@@ -376,13 +438,15 @@ function hopTo(el, targetLeft, targetTop, duration) {
   });
 }
 
-/* [LADDER/SNAKE TRAVERSAL] Smooth slide with subtle scale pulse */
-function slideTo(el, targetLeft, targetTop, duration) {
+/* [LADDER/SNAKE TRAVERSAL] Smooth slide with a scale pulse. `wobble` adds a
+   lateral sway for the slithery snake descent. */
+function slideTo(el, targetLeft, targetTop, duration, wobble) {
   return new Promise(function (resolve) {
     const startLeft = parseFloat(el.style.left) || 0;
     const startTop = parseFloat(el.style.top) || 0;
     const dLeft = targetLeft - startLeft;
     const dTop = targetTop - startTop;
+    const sway = wobble ? 9 : 0;
     const startTime = performance.now();
 
     function frame(now) {
@@ -390,9 +454,11 @@ function slideTo(el, targetLeft, targetTop, duration) {
       /* Quartic ease-out: fast start, smooth settle */
       const ease = 1 - Math.pow(1 - t, 4);
       /* Gentle scale pulse during traversal */
-      const scale = 1 + 0.12 * Math.sin(t * Math.PI);
+      const scale = 1 + 0.16 * Math.sin(t * Math.PI);
+      /* Lateral sway fades out as the slide settles */
+      const wob = sway * Math.sin(t * Math.PI * 3) * (1 - t);
 
-      el.style.left = (startLeft + dLeft * ease) + "px";
+      el.style.left = (startLeft + dLeft * ease + wob) + "px";
       el.style.top = (startTop + dTop * ease) + "px";
       el.style.transform = "scale(" + scale.toFixed(3) + ")";
 
@@ -492,8 +558,12 @@ async function animateTokenMove(fromSquare, toSquare, color) {
   for (let sq = fromSquare + 1; sq <= rawLanding; sq++) {
     const target = getSquareTokenPos(sq);
     if (!target || activeGhost !== ghost) break;
-    await hopTo(ghost, target.left, target.top, 260);
+    await hopTo(ghost, target.left, target.top, 220);
+    sfx.playHop();
   }
+
+  /* A single tap once the hops land (kept off per-hop to avoid buzz spam). */
+  if (!hasJump) haptics.land();
 
   /* Phase 2: [LADDER TRAVERSAL / SNAKE DESCENT] distinct from normal hops */
   if (hasJump && activeGhost === ghost) {
@@ -502,9 +572,21 @@ async function animateTokenMove(fromSquare, toSquare, color) {
     if (activeGhost !== ghost) return;
 
     ghost.classList.add(isLadder ? "climb-glow" : "descend-glow");
+    if (isLadder) { sfx.playLadder(); haptics.ladder(); }
+    else { sfx.playSnake(); haptics.snake(); }
+
     const jumpTarget = getSquareTokenPos(toSquare);
     if (jumpTarget) {
-      await slideTo(ghost, jumpTarget.left, jumpTarget.top, isLadder ? 420 : 380);
+      await slideTo(ghost, jumpTarget.left, jumpTarget.top, isLadder ? 420 : 380, !isLadder);
+    }
+
+    /* Celebrate a successful climb with a sparkle at the destination cell. */
+    if (isLadder) {
+      const cell = boardEl.querySelector("[data-square='" + toSquare + "']");
+      if (cell) {
+        const r = cell.getBoundingClientRect();
+        confetti.sparkle(r.left + r.width / 2, r.top + r.height / 2);
+      }
     }
   }
 
@@ -666,6 +748,14 @@ function updateUI() {
       ? winnerName + " reached square 100!"
       : winnerName + " wins \u2014 opponent left the game.";
     winOverlayEl.classList.remove("hidden");
+
+    /* Fire celebration effects once per win (not on every re-render). */
+    if (!winCelebrated) {
+      winCelebrated = true;
+      confetti.burst();
+      sfx.playWin();
+      haptics.win();
+    }
   } else {
     /* No winner: keep the overlay hidden (covers rematch resets). */
     winOverlayEl.classList.add("hidden");
@@ -777,6 +867,7 @@ async function rollDice() {
   rollDiceBtn.disabled = true;
   rollDiceBtn.classList.remove("pulse");
   shakeDice();
+  haptics.roll();
 
   const role = currentMembership.role;
   const posKey = role === "player1" ? "player1_position" : "player2_position";
@@ -835,6 +926,8 @@ async function requestRematch() {
       prevP1Pos = 0;
       prevP2Pos = 0;
       animateMoves = false;
+      winCelebrated = false;
+      confetti.clear();
       winOverlayEl.classList.add("hidden");
       diceCharEl.textContent = "?";
       lastActionEl.textContent = "Roll to start";
@@ -858,6 +951,8 @@ function leaveToLobby() {
   prevP1Pos = 0;
   prevP2Pos = 0;
   animateMoves = false;
+  winCelebrated = false;
+  confetti.clear();
   presenceState = {};
   diceCharEl.textContent = "?";
   lastActionEl.textContent = "Roll to start";
@@ -961,6 +1056,8 @@ function handleGameChange(payload) {
     prevP1Pos = 0;
     prevP2Pos = 0;
     animateMoves = false;
+    winCelebrated = false;
+    confetti.clear();
     diceCharEl.textContent = "?";
     lastActionEl.textContent = "Roll to start";
     winOverlayEl.classList.add("hidden");
@@ -1045,6 +1142,10 @@ async function loadRoomState(roomCode) {
   prevP1Pos = currentGame?.player1_position ?? 0;
   prevP2Pos = currentGame?.player2_position ?? 0;
 
+  /* If the game is already won on load (rejoin/refresh), don't replay the
+     celebration — treat it as already shown. */
+  winCelebrated = !!currentGame?.winner;
+
   /* Reset presence baseline; the channel re-tracks on (re)subscribe. */
   presenceState = {};
   opponentOnline = false;
@@ -1094,8 +1195,33 @@ refreshRoomBtn.addEventListener("click", async function () {
 });
 
 rollDiceBtn.addEventListener("click", async function () {
+  sfx.unlock();
   try { await rollDice(); } catch (e) { console.error(e); logMessage("Error: " + e.message); notifyError(e.message); }
 });
+
+/* ── Sound mute toggle ── */
+
+function updateMuteButton() {
+  const muted = sfx.isMuted();
+  muteBtn.textContent = muted ? "🔇" : "🔊";
+  muteBtn.setAttribute("aria-pressed", muted ? "true" : "false");
+  muteBtn.setAttribute("aria-label", muted ? "Unmute sound" : "Mute sound");
+}
+
+muteBtn.addEventListener("click", function () {
+  sfx.unlock();
+  sfx.toggleMute();
+  updateMuteButton();
+  if (!sfx.isMuted()) sfx.playHop(); // tiny audible confirmation
+});
+
+updateMuteButton();
+
+/* Unlock the AudioContext on the first user gesture (autoplay policy). */
+document.addEventListener("pointerdown", function unlockOnce() {
+  sfx.unlock();
+  document.removeEventListener("pointerdown", unlockOnce);
+}, { once: true });
 
 copyCodeBtn.addEventListener("click", function () {
   const code = currentRoom?.code;

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <meta name="theme-color" content="#1a1a1a" />
+  <meta name="theme-color" content="#1f2a44" />
   <meta name="color-scheme" content="light" />
   <title>Snakes &amp; Ladders</title>
   <link rel="stylesheet" href="style.css" />
@@ -39,6 +39,7 @@
     <header class="room-bar">
       <span class="room-tag">ROOM</span>
       <span id="roomCodeDisplay" class="room-code">------</span>
+      <button id="muteBtn" class="bar-btn" aria-label="Toggle sound" aria-pressed="false">&#128266;</button>
       <button id="copyCodeBtn" class="bar-btn" aria-label="Copy room code">Copy</button>
       <button id="refreshRoomBtn" class="bar-btn" aria-label="Refresh room state">Refresh</button>
       <button id="leaveRoomBtn" class="bar-btn" aria-label="Leave room">Leave</button>
@@ -95,7 +96,7 @@
   <!-- WIN OVERLAY -->
   <div id="winOverlay" class="win-overlay hidden" role="dialog" aria-labelledby="winTitle">
     <div class="win-box">
-      <div class="win-crown" aria-hidden="true">\uD83D\uDC51</div>
+      <div class="win-crown" aria-hidden="true">&#128081;</div>
       <h2 id="winTitle">Victory!</h2>
       <p id="winMessage">&mdash;</p>
       <div class="win-actions">
