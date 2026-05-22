@@ -1,9 +1,10 @@
 /* Local (offline / vs-CPU / hot-seat) game engine. Pure: no DOM, no network —
    unit-tested like gameLogic.js. It owns the local match state and produces game
    rows in the EXACT shape app.js's render pipeline reads, so the entire existing
-   animation/win pipeline is reused without changes. Power-ups, AI seats and 3-4
-   players live here only; online "classic" mode never touches this module and so
-   stays in lockstep with the server. */
+   animation/win pipeline is reused without changes. 3-4 players and AI seats live
+   here only. Power-up RULES (this module + gameLogic.resolveMoveWithPowerUps) are
+   MIRRORED server-side in the roll_dice SQL for online play — keep the two in sync:
+   identical power-up ids, INVENTORY_CAP, tile counts and MYSTERY_OUTCOMES order. */
 
 import { resolveMoveWithPowerUps } from "./gameLogic.js";
 
@@ -13,14 +14,21 @@ export const ROLES = ["player1", "player2", "player3", "player4"];
 export const SEAT_COLORS = ["#3d8bff", "#ff5fa2", "#18c2a8", "#f5b430"];
 
 export const POWER_UPS = {
-  shield:     { id: "shield",     name: "Shield",      icon: "🛡️", desc: "Blocks the next snake you land on." },
+  shield:     { id: "shield",     name: "Shield",      icon: "🛡️", desc: "Blocks the next snake you land on, then it's gone." },
   doubleRoll: { id: "doubleRoll", name: "Double Roll", icon: "🎲", desc: "Roll twice and move the total." },
-  swap:       { id: "swap",       name: "Swap",        icon: "🔄", desc: "Swap places with the current leader." }
+  swap:       { id: "swap",       name: "Swap",        icon: "🔄", desc: "Swap places with the current leader." },
+  extraRoll:  { id: "extraRoll",  name: "Extra Roll",  icon: "↻",  desc: "Take another turn after this one." },
+  freeze:     { id: "freeze",     name: "Freeze",      icon: "❄️", desc: "Skip the current leader's next turn." }
 };
 
 const POWER_IDS = Object.keys(POWER_UPS);
 const INVENTORY_CAP = 2;
-const DEFAULT_POWER_TILES = 8;
+const DEFAULT_POWER_TILES = 6;
+const DEFAULT_MYSTERY_TILES = 3;
+
+/* Instant effects when landing on a mystery tile. Order MUST match the server. */
+export const MYSTERY_OUTCOMES = ["advance", "retreat", "grant", "extra"];
+const MYSTERY_STEP = 4;
 
 function rngOf(config) {
   return (config && config.rng) || Math.random;
@@ -36,6 +44,28 @@ export function generatePowerTiles(jumps, rng, count) {
     used.add(Number(k));
     used.add(jumps[k]);
   }
+  const tiles = {};
+  let guard = 0;
+  while (Object.keys(tiles).length < total && guard < 2000) {
+    guard += 1;
+    const sq = 2 + Math.floor(random() * 97); // 2..98
+    if (used.has(sq) || tiles[sq]) continue;
+    tiles[sq] = true;
+  }
+  return tiles;
+}
+
+/* Mystery tiles: same placement rules as power tiles, but also avoiding the
+   `exclude` squares (the already-chosen power tiles) so the two never overlap. */
+export function generateMysteryTiles(jumps, rng, count, exclude) {
+  const random = rng || Math.random;
+  const total = count || DEFAULT_MYSTERY_TILES;
+  const used = new Set([1, 100]);
+  for (const k of Object.keys(jumps || {})) {
+    used.add(Number(k));
+    used.add(jumps[k]);
+  }
+  for (const k of Object.keys(exclude || {})) used.add(Number(k));
   const tiles = {};
   let guard = 0;
   while (Object.keys(tiles).length < total && guard < 2000) {
@@ -73,11 +103,17 @@ export function createLocalGame(config) {
   const positions = {};
   const inventory = {};
   const pending = {};
+  const frozen = {};
   seats.forEach(function (s) {
     positions[s.role] = 0;
     inventory[s.role] = [];
     pending[s.role] = {};
+    frozen[s.role] = false;
   });
+
+  const powerTiles = cfg.powerUpsEnabled ? generatePowerTiles(cfg.jumps || {}, rng, DEFAULT_POWER_TILES) : {};
+  const mysteryTiles = cfg.powerUpsEnabled
+    ? generateMysteryTiles(cfg.jumps || {}, rng, DEFAULT_MYSTERY_TILES, powerTiles) : {};
 
   return {
     board_id: cfg.boardId,
@@ -90,7 +126,9 @@ export function createLocalGame(config) {
     seats: seats,
     inventory: inventory,
     pending: pending,
-    powerTiles: cfg.powerUpsEnabled ? generatePowerTiles(cfg.jumps || {}, rng) : {},
+    frozen: frozen,
+    powerTiles: powerTiles,
+    mysteryTiles: mysteryTiles,
     config: {
       playerCount: seats.length,
       powerUpsEnabled: !!cfg.powerUpsEnabled,
@@ -133,6 +171,47 @@ function nextRole(state) {
   const order = state.seats.map(function (s) { return s.role; });
   const idx = order.indexOf(state.current_turn);
   return order[(idx + 1) % order.length];
+}
+
+/* Advance the turn. `extraTurn` keeps the current player. Otherwise move to the
+   next role, skipping (and clearing) any frozen roles, emitting frozenSkip. */
+function advanceTurn(state, extraTurn, events) {
+  if (extraTurn) return;
+  const order = state.seats.map(function (s) { return s.role; });
+  let idx = order.indexOf(state.current_turn);
+  for (let guard = 0; guard < order.length; guard++) {
+    idx = (idx + 1) % order.length;
+    const next = order[idx];
+    if (state.frozen && state.frozen[next]) {
+      state.frozen[next] = false;
+      events.push({ type: "frozenSkip", role: next });
+      continue;
+    }
+    state.current_turn = next;
+    return;
+  }
+  state.current_turn = nextRole(state);
+}
+
+/* Instant effect for a mystery tile. Mutates state and returns a result the UI
+   uses for FX. MUST mirror the server's mystery logic (same outcome order). */
+function applyMystery(state, role, random) {
+  const idx = Math.floor(random() * MYSTERY_OUTCOMES.length);
+  const kind = MYSTERY_OUTCOMES[idx];
+  const from = state.positions[role];
+  const result = { kind: kind, from: from };
+
+  if (kind === "advance" || kind === "retreat") {
+    const to = kind === "advance" ? Math.min(100, from + MYSTERY_STEP) : Math.max(0, from - MYSTERY_STEP);
+    state.positions[role] = to;
+    state.lastMoves[role] = { relocate: true, from: from, to: to, newPos: to, jumpType: null, bounced: false };
+    result.to = to;
+  } else if (kind === "grant") {
+    result.granted = acquirePowerUp(state, role, random).granted;
+  } else { // extra
+    result.extraTurn = true;
+  }
+  return result;
 }
 
 /* Highest-positioned seat other than `role` (ties resolve to the earliest seat). */
@@ -179,6 +258,7 @@ export function stepRoll(state, roll, chosenPowerUp, rng) {
 
   let effectiveRoll = roll;
   let usedSwap = false;
+  let extraTurn = false;
 
   if (chosenPowerUp && state.inventory[role].indexOf(chosenPowerUp) >= 0) {
     if (chosenPowerUp === "doubleRoll") {
@@ -194,6 +274,17 @@ export function stepRoll(state, roll, chosenPowerUp, rng) {
       usedSwap = true;
       consume(state, role, "swap");
       events.push({ type: "powerup", id: "swap", role: role });
+    } else if (chosenPowerUp === "extraRoll") {
+      extraTurn = true;
+      consume(state, role, "extraRoll");
+      events.push({ type: "powerup", id: "extraRoll", role: role });
+    } else if (chosenPowerUp === "freeze") {
+      const target = leadingRoleExcluding(state, role);
+      if (target && target !== role) {
+        state.frozen[target] = true;
+        consume(state, role, "freeze");
+        events.push({ type: "powerup", id: "freeze", role: role, target: target });
+      }
     }
   }
 
@@ -218,9 +309,15 @@ export function stepRoll(state, roll, chosenPowerUp, rng) {
       to: move.newPos, jumpType: move.jumpType, roll: effectiveRoll
     });
 
-    if (state.config.powerUpsEnabled && state.powerTiles[move.newPos] && move.newPos !== 100) {
-      const granted = acquirePowerUp(state, role, random).granted;
-      if (granted) events.push({ type: "acquire", role: role, id: granted, at: move.newPos });
+    if (state.config.powerUpsEnabled && move.newPos !== 100) {
+      if (state.powerTiles[move.newPos]) {
+        const granted = acquirePowerUp(state, role, random).granted;
+        if (granted) events.push({ type: "acquire", role: role, id: granted, at: move.newPos });
+      } else if (state.mysteryTiles && state.mysteryTiles[move.newPos]) {
+        const outcome = applyMystery(state, role, random);
+        if (outcome.extraTurn) extraTurn = true;
+        events.push({ type: "mystery", role: role, at: move.newPos, outcome: outcome });
+      }
     }
   }
 
@@ -247,7 +344,7 @@ export function stepRoll(state, roll, chosenPowerUp, rng) {
     state.winner = winner;
     events.push({ type: "win", role: winner });
   } else {
-    state.current_turn = nextRole(state);
+    advanceTurn(state, extraTurn, events);
   }
 
   state.version += 1;
