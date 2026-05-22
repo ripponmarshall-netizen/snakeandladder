@@ -2,7 +2,6 @@ import { boards } from "./boards.js";
 import { supabase, ensureSignedIn, getCurrentUser } from "./supabase.js";
 import { getCellNumber, cellToSVG, resolveMove, validateBoardSet } from "./gameLogic.js";
 import * as localGame from "./localGame.js";
-import * as aiPolicy from "./aiPolicy.js";
 import * as theme from "./theme.js";
 import * as stats from "./stats.js";
 import * as dice3d from "./dice3d.js";
@@ -55,7 +54,6 @@ const localStripEl = document.getElementById("localStrip");
 const turnTimerEl = document.getElementById("turnTimer");
 const turnTimerBarEl = document.getElementById("turnTimerBar");
 const emoteBarEl = document.getElementById("emoteBar");
-const powerTrayEl = document.getElementById("powerTray");
 
 const avatarPickEl = document.getElementById("avatarPick");
 const diceSkinPickEl = document.getElementById("diceSkinPick");
@@ -101,7 +99,6 @@ let winCelebrated = false;
 /* ── Mode + local game state ── */
 let gameMode = "online"; // "online" | "local"
 let localState = null;
-let armedPowerUp = null;
 let busyAnimating = false;
 let pendingAnims = 0;
 let myAvatar = { color: null, emoji: null };
@@ -654,8 +651,10 @@ async function animateTokenMove(fromSquare, toSquare, seat, move) {
   if (activeGhost !== ghost) { if (isWinningMove) revealWin(seat); return; }
 
   /* [VICTORY RUN] Dramatic slow-motion dash to 100, then a big splash.
-     revealWin runs in finally so the overlay is never left stuck hidden. */
-  if (isWinningMove) {
+     revealWin runs in finally so the overlay is never left stuck hidden. A
+     reveal-driven win (mystery advance onto 100) skips the run so the reveal
+     can play first — revealWin then fires from the reveal branch instead. */
+  if (isWinningMove && !move.reveal) {
     try {
       await animateVictoryRun(fromSquare, ghost, seat);
     } finally {
@@ -667,8 +666,11 @@ async function animateTokenMove(fromSquare, toSquare, seat, move) {
     return;
   }
 
-  /* [SWAP] Direct slide to the destination — no tile-by-tile hops. */
+  /* [SWAP / RELOCATE] Direct slide to the destination — no tile-by-tile hops.
+     `delay` holds a swapped-in opponent back until the mover's reveal finishes. */
   if (move.relocate) {
+    if (move.delay) await sleep(move.delay);
+    if (activeGhost !== ghost) { showRealToken(toSquare, idx); return; }
     const tgt = getSquareTokenPos(toSquare);
     if (tgt) await slideTo(ghost, tgt.left, tgt.top, 460, false);
     if (activeGhost === ghost) { ghost.remove(); activeGhost = null; }
@@ -705,6 +707,24 @@ async function animateTokenMove(fromSquare, toSquare, seat, move) {
       sfx.playHop();
       emitTrail(ghost, seat.color || DEFAULT_SEAT_COLORS[idx - 1]);
     }
+  }
+
+  /* [HIDDEN TILE REVEAL] The token has landed on a hidden power/mystery tile.
+     Play the slow reveal (shows what it is), then — for effects that move the
+     token (swap, mystery advance/retreat) — slide on to the final square. The
+     effect itself was already applied by the engine/server. */
+  if (move.reveal && activeGhost === ghost) {
+    haptics.land();
+    await playTileReveal(rawLanding, move.reveal);
+    if (activeGhost !== ghost) { if (isWinningMove) revealWin(seat); return; }
+    if (toSquare !== rawLanding) {
+      const tgt = getSquareTokenPos(toSquare);
+      if (tgt) await slideTo(ghost, tgt.left, tgt.top, 460, false);
+    }
+    if (activeGhost === ghost) { ghost.remove(); activeGhost = null; }
+    showRealToken(toSquare, idx);
+    if (isWinningMove) revealWin(seat);
+    return;
   }
 
   if (!hasJump) haptics.land();
@@ -909,17 +929,45 @@ function getSeats() {
   return out;
 }
 
+/* Find this version's instant power / mystery event for a role (online). */
+function tileEventForSeat(role) {
+  const evs = currentGame && currentGame.last_power_event;
+  if (!Array.isArray(evs)) return null;
+  return evs.find(function (e) {
+    return (e.kind === "acquire" || e.kind === "mystery") && e.role === role;
+  }) || null;
+}
+
 function moveForSeat(seat, fromPos) {
   if (gameMode === "local" && localState && localState.lastMoves[seat.role]) {
     return localState.lastMoves[seat.role];
   }
   const board = findBoardById(currentGame ? currentGame.board_id : boards[0].id);
   const move = resolveMove(fromPos, currentGame ? (currentGame.last_roll || 0) : 0, board.jumps);
-  /* Online with power-ups: the real position (server) can differ from a plain
-     dice resolve (double-roll, shield, mystery, swap). When it does, slide the
-     token straight to the actual square instead of mis-hopping. */
-  if (gameMode === "online" && seat.position !== move.newPos && seat.position !== fromPos) {
-    return { relocate: true, from: fromPos, to: seat.position, newPos: seat.position, jumpType: null, bounced: false };
+
+  if (gameMode === "online" && currentGame) {
+    /* The roller landed on a hidden tile: hop to the tile, play the slow reveal,
+       then slide on to the server's final square (mystery advance/retreat, swap). */
+    const ev = tileEventForSeat(seat.role);
+    if (ev) {
+      const reveal = ev.kind === "mystery"
+        ? { kind: "mystery", outcome: { kind: ev.outcome, to: ev.to } }
+        : { kind: "power", id: ev.id };
+      return { landing: ev.at, newPos: seat.position, jumpType: null, bounced: false, reveal: reveal };
+    }
+    /* Opponent swapped in by someone else's tile: hold the slide until the
+       reveal finishes so the two tokens trade places together. */
+    const evs = currentGame.last_power_event;
+    const swappedIn = Array.isArray(evs) && evs.some(function (e) {
+      return e.kind === "acquire" && e.id === "swap" && e.with === seat.role;
+    });
+    if (swappedIn && seat.position !== fromPos) {
+      return { relocate: true, from: fromPos, to: seat.position, newPos: seat.position, jumpType: null, bounced: false, delay: TILE_REVEAL_MS };
+    }
+    /* Any other server/client divergence (e.g. shield-blocked snake): slide. */
+    if (seat.position !== move.newPos && seat.position !== fromPos) {
+      return { relocate: true, from: fromPos, to: seat.position, newPos: seat.position, jumpType: null, bounced: false };
+    }
   }
   return move;
 }
@@ -970,7 +1018,7 @@ function renderBoard() {
   const jumps = board.jumps;
   const seats = getSeats();
   /* Power-up & mystery tiles are intentionally hidden — they only reveal with a
-     pop when a player lands on one (see popTileReveal). */
+     slow pop when a player lands on one (see playTileReveal). */
 
   for (let row = 0; row < 10; row++) {
     for (let col = 0; col < 10; col++) {
@@ -1248,7 +1296,6 @@ function updateOnlineUI(seats) {
   copyCodeBtn.style.display = "";
   refreshRoomBtn.style.display = "";
   emoteBarEl.classList.remove("hidden");
-  renderPowerTray();
 
   playerStripEl.classList.toggle("wrap", seats.length > 2);
   renderStrip(playerStripEl, seats, {
@@ -1362,8 +1409,6 @@ function updateLocalUI(seats) {
   rollDiceBtn.classList.toggle("pulse", humanTurn && !winner);
   rollDiceBtn.textContent = winner ? "Game Over" : (humanTurn ? "Roll" : "Waiting…");
   diceEl.classList.toggle("your-turn", humanTurn && !winner);
-
-  renderPowerTray();
 }
 
 /* Shared player-strip renderer for both modes. Each card carries data-role so
@@ -1408,57 +1453,6 @@ function renderStrip(targetEl, seats, opts) {
     }
 
     targetEl.appendChild(card);
-  });
-}
-
-function renderPowerTray() {
-  let enabled, myTurn, inv;
-  if (gameMode === "local") {
-    enabled = !!(localState && localState.config.powerUpsEnabled);
-    myTurn = enabled && localGame.isHumanTurn(localState);
-    inv = myTurn ? (localState.inventory[localState.current_turn] || []) : [];
-  } else {
-    const ps = currentGame && currentGame.power_state;
-    enabled = !!(ps && ps.inventory);
-    const myRole = currentMembership && currentMembership.role;
-    const roomFull = currentPlayers.length >= onlineMaxPlayers();
-    myTurn = enabled && roomFull && currentGame && !currentGame.winner && myRole === currentGame.current_turn;
-    inv = (myTurn && ps.inventory[myRole]) ? ps.inventory[myRole] : [];
-  }
-
-  if (!enabled) {
-    powerTrayEl.classList.add("hidden");
-    return;
-  }
-  powerTrayEl.classList.remove("hidden");
-  powerTrayEl.innerHTML = "";
-
-  if (!myTurn || !inv.length) {
-    const empty = document.createElement("div");
-    empty.className = "power-tray-empty";
-    empty.textContent = myTurn ? "No power-ups yet" : "";
-    powerTrayEl.appendChild(empty);
-    return;
-  }
-
-  inv.forEach(function (id) {
-    const meta = localGame.POWER_UPS[id];
-    if (!meta) return;
-    const chip = document.createElement("button");
-    chip.className = "power-chip" + (armedPowerUp === id ? " armed" : "");
-    chip.title = meta.desc;
-    const icon = document.createElement("span");
-    icon.className = "pc-icon";
-    icon.textContent = meta.icon;
-    const label = document.createElement("span");
-    label.textContent = meta.name;
-    chip.appendChild(icon);
-    chip.appendChild(label);
-    chip.addEventListener("click", function () {
-      armedPowerUp = (armedPowerUp === id) ? null : id;
-      renderPowerTray();
-    });
-    powerTrayEl.appendChild(chip);
   });
 }
 
@@ -1559,13 +1553,10 @@ async function rollDice() {
   const role = currentMembership.role;
   const posKey = role + "_position";
   const fromPos = currentGame[posKey] ?? 0;
-  const armed = armedPowerUp;
-  armedPowerUp = null;
 
   try {
     const { data, error } = await supabase.rpc("roll_dice", {
-      p_room_id: currentRoom.id,
-      p_power_up: armed
+      p_room_id: currentRoom.id
     });
     if (error) { notifyError(errorMessage(error, "Roll failed.")); return; }
 
@@ -1574,9 +1565,9 @@ async function rollDice() {
 
     /* The RPC return value is authoritative \u2014 apply it directly. The realtime
        broadcast of this same row arrives shortly after and is deduped by version.
-       With power-ups the basic resolveMove log is inaccurate (double-roll / shield
-       / mystery), so the power-event handler describes those instead. */
-    if (!game.power_state || !game.power_state.inventory) {
+       With power-ups the basic resolveMove log is inaccurate (shield / mystery /
+       swap), so the power-event handler describes those instead. */
+    if (!game.power_state || !game.power_state.tiles) {
       const board = findBoardById(game.board_id);
       describeMove(game.last_roll, fromPos, resolveMove(fromPos, game.last_roll, board.jumps));
     } else {
@@ -1646,7 +1637,6 @@ function leaveToLobby() {
   }
   gameMode = "online";
   localState = null;
-  armedPowerUp = null;
   currentRoom = null;
   currentMembership = null;
   currentGame = null;
@@ -1665,7 +1655,6 @@ function leaveToLobby() {
   gameScreenEl.classList.add("hidden");
   playerStripEl.classList.remove("hidden");
   localStripEl.classList.add("hidden");
-  powerTrayEl.classList.add("hidden");
   copyCodeBtn.style.display = "";
   refreshRoomBtn.style.display = "";
   lobbyEl.classList.remove("hidden");
@@ -1704,19 +1693,18 @@ function syncFromLocal() {
 function rollLocal() {
   if (!localState || !localGame.isHumanTurn(localState) || busyAnimating) return;
   const roll = rollDie();
-  applyLocalRoll(roll, armedPowerUp);
+  applyLocalRoll(roll);
 }
 
-function applyLocalRoll(roll, chosen) {
+function applyLocalRoll(roll) {
   clearTurnTimer();
   rollDiceBtn.disabled = true;
   rollDiceBtn.classList.remove("pulse");
   shakeDice();
   haptics.roll();
 
-  const result = localGame.stepRoll(localState, roll, chosen, cryptoRandom);
+  const result = localGame.stepRoll(localState, roll, cryptoRandom);
   localState = result.state;
-  armedPowerUp = null;
 
   describeLocalEvents(result.events);
   animateDice(localState.last_roll);
@@ -1734,21 +1722,55 @@ function sparkleAtSquare(square) {
   confetti.sparkle(r.left + r.width / 2, r.top + r.height / 2);
 }
 
-/* Reveal a hidden power/mystery tile with a pop on the cell + a sparkle. */
-function popTileReveal(square, kind, iconText) {
-  if (reducedMotion()) return;
+/* How long the slow tile reveal lingers. Mirrors localGame.REVEAL_DELAY so a
+   swapped-in opponent's slide stays in step with the reveal. */
+const TILE_REVEAL_MS = 1500;
+
+/* Icon + short label for a reveal descriptor ({kind:"power",id} | {kind:"mystery",outcome}). */
+function revealContent(reveal) {
+  if (!reveal) return { cls: "power", icon: "★", label: "Power-up" };
+  if (reveal.kind === "power") {
+    const meta = localGame.POWER_UPS[reveal.id];
+    return { cls: "power", icon: meta ? meta.icon : "★", label: meta ? meta.name : "Power-up" };
+  }
+  const kind = reveal.outcome ? reveal.outcome.kind : null;
+  if (kind === "advance") return { cls: "mystery", icon: "🚀", label: "Boost!" };
+  if (kind === "retreat") return { cls: "mystery", icon: "🐌", label: "Slip!" };
+  if (kind === "extra")   return { cls: "mystery", icon: "↻",  label: "Extra turn!" };
+  return { cls: "mystery", icon: "❓", label: "Mystery!" };
+}
+
+/* Slowly reveal a hidden power/mystery tile once a token lands on it: the cell
+   glows and a labelled badge (icon + name) rises and lingers so the player sees
+   WHAT it is. Returns a promise resolving when the reveal finishes (the effect
+   itself was already applied by the engine/server). Reduced motion resolves
+   immediately — the toast/log still announce the outcome. */
+function playTileReveal(square, reveal) {
   const cell = boardEl.querySelector("[data-square='" + square + "']");
-  if (!cell) return;
-  const pop = document.createElement("div");
-  pop.className = "tile-pop tile-pop-" + kind;
+  if (reducedMotion() || !cell) return Promise.resolve();
+
+  const content = revealContent(reveal);
+  const wrap = document.createElement("div");
+  wrap.className = "tile-reveal tile-reveal-" + content.cls;
+
   const icon = document.createElement("span");
-  icon.className = "tile-pop-icon";
-  icon.textContent = iconText;
-  pop.appendChild(icon);
-  cell.appendChild(pop);
-  setTimeout(function () { pop.remove(); }, 900);
+  icon.className = "tile-reveal-icon";
+  icon.textContent = content.icon;
+
+  const label = document.createElement("span");
+  label.className = "tile-reveal-label";
+  label.textContent = content.label;
+
+  wrap.appendChild(icon);
+  wrap.appendChild(label);
+  cell.appendChild(wrap);
+
   const r = cell.getBoundingClientRect();
   confetti.sparkle(r.left + r.width / 2, r.top + r.height / 2);
+
+  return new Promise(function (resolve) {
+    setTimeout(function () { wrap.remove(); resolve(); }, TILE_REVEAL_MS);
+  });
 }
 
 /* Human-readable summary of a mystery-tile outcome (mirrors localGame.applyMystery). */
@@ -1775,25 +1797,25 @@ function pulseDiceGlow() {
 function describeLocalEvents(events) {
   events.forEach(function (e) {
     if (e.type === "powerup") {
-      sfx.playPowerUse();
-      if (e.id === "doubleRoll") {
-        logMessage(seatName(e.role) + " used Double Roll: " + e.rolls[0] + " + " + e.rolls[1] + " = " + e.total + ".");
-        showToast("Double Roll — moved " + e.total + "!");
-        pulseDiceGlow();
-        showEmote(e.role, "🎲");
+      /* Instant power-up from a hidden tile. The slow reveal + token FX play later
+         (driven by the move's `reveal`); here we just announce it. */
+      sfx.playPowerGain();
+      const meta = localGame.POWER_UPS[e.id];
+      if (e.id === "doubleRoll" || e.id === "extraRoll") {
+        logMessage(seatName(e.role) + " found " + (meta ? meta.name : e.id) + " — another turn!");
+        showToast((meta ? meta.name : e.id) + " — go again!");
+        showEmote(e.role, meta ? meta.icon : "↻");
       } else if (e.id === "shield") {
-        logMessage(seatName(e.role) + " armed a Shield.");
+        logMessage(seatName(e.role) + " picked up a Shield — blocks the next snake.");
+        showToast("Shield — blocks the next snake!");
         showEmote(e.role, "🛡️");
       } else if (e.id === "swap") {
-        logMessage(seatName(e.role) + " used Swap.");
+        logMessage(seatName(e.role) + " found Swap" + (e.with ? " — swapping with " + seatName(e.with) + "!" : "!"));
+        showToast(e.with ? "Swap with " + seatName(e.with) + "!" : "Swap!");
         showEmote(e.role, "🔄");
-      } else if (e.id === "extraRoll") {
-        logMessage(seatName(e.role) + " used Extra Roll — another turn!");
-        showToast("Extra Roll — go again!");
-        showEmote(e.role, "↻");
       } else if (e.id === "freeze") {
-        logMessage(seatName(e.role) + " froze " + seatName(e.target) + "!");
-        showToast("Froze " + seatName(e.target) + "!");
+        logMessage(seatName(e.role) + " found Freeze" + (e.target ? " — froze " + seatName(e.target) + "!" : "!"));
+        showToast(e.target ? "Froze " + seatName(e.target) + "!" : "Freeze!");
         showEmote(e.role, "❄️");
       }
     } else if (e.type === "shieldBlock") {
@@ -1801,18 +1823,11 @@ function describeLocalEvents(events) {
       logMessage("Shield blocked a snake at " + e.at + ".");
       sparkleAtSquare(e.at);
       showEmote(e.role, "🛡️");
-    } else if (e.type === "acquire") {
-      sfx.playPowerGain();
-      const meta = localGame.POWER_UPS[e.id];
-      logMessage(seatName(e.role) + " picked up " + (meta ? meta.name : e.id) + "!");
-      showToast("Power-up: " + (meta ? meta.name : e.id));
-      popTileReveal(e.at, "power", meta ? meta.icon : "★");
     } else if (e.type === "mystery") {
       sfx.playPowerGain();
       const txt = mysteryText(e.outcome);
       logMessage(seatName(e.role) + " hit a Mystery tile — " + txt);
       showToast(txt);
-      popTileReveal(e.at, "mystery", "❓");
     } else if (e.type === "frozenSkip") {
       showToast(seatName(e.role) + "'s turn was frozen!");
       logMessage(seatName(e.role) + "'s turn was skipped (frozen).");
@@ -1824,33 +1839,37 @@ function describeLocalEvents(events) {
       logMessage(msg);
     } else if (e.type === "bounce") {
       logMessage(seatName(e.role) + " rolled " + e.roll + " — needs exact, stays put.");
-    } else if (e.type === "swap") {
-      showToast(seatName(e.role) + " swapped with " + seatName(e.with) + "!");
     } else if (e.type === "win") {
       logMessage(seatName(e.role) + " reached square 100!");
     }
   });
 }
 
-/* Replay server power-up events (online) for FX: pops, toasts, emotes, log. */
+/* Replay server power-up events (online) for FX: toasts, emotes, log. The slow
+   tile reveal + token slide are driven separately by the move's `reveal`
+   (built in moveForSeat), so these handlers no longer pop the tile. */
 function applyPowerEvents(events) {
   if (!Array.isArray(events)) return;
   events.forEach(function (e) {
     const name = onlineName(e.role);
-    if (e.kind === "use") {
-      sfx.playPowerUse();
-      const meta = localGame.POWER_UPS[e.id];
-      if (e.id === "freeze") showToast(name + " froze " + onlineName(e.target) + "!");
-      else if (e.id === "doubleRoll") { showToast(name + " used Double Roll!"); pulseDiceGlow(); }
-      else showToast(name + " used " + (meta ? meta.name : e.id) + "!");
-      if (meta) showEmote(e.role, meta.icon);
-      logMessage(name + " used " + (meta ? meta.name : e.id) + ".");
-    } else if (e.kind === "acquire") {
+    if (e.kind === "acquire") {
+      /* A power-up applied instantly on landing. */
       sfx.playPowerGain();
       const meta = localGame.POWER_UPS[e.id];
-      showToast(name + " got " + (meta ? meta.name : e.id) + "!");
-      logMessage(name + " picked up " + (meta ? meta.name : e.id) + "!");
-      popTileReveal(e.at, "power", meta ? meta.icon : "★");
+      const label = meta ? meta.name : e.id;
+      if (e.id === "doubleRoll" || e.id === "extraRoll") {
+        showToast(name + " found " + label + " — another turn!");
+      } else if (e.id === "swap") {
+        showToast(name + (e.with ? " swapped with " + onlineName(e.with) + "!" : " found Swap!"));
+      } else if (e.id === "freeze") {
+        showToast(name + (e.target ? " froze " + onlineName(e.target) + "!" : " found Freeze!"));
+      } else if (e.id === "shield") {
+        showToast(name + " picked up a Shield — blocks the next snake!");
+      } else {
+        showToast(name + " got " + label + "!");
+      }
+      if (meta) showEmote(e.role, meta.icon);
+      logMessage(name + " landed on a power-up — " + label + "!");
     } else if (e.kind === "mystery") {
       sfx.playPowerGain();
       let txt;
@@ -1860,7 +1879,6 @@ function applyPowerEvents(events) {
       else txt = "Mystery — roll again!";
       showToast(name + " — " + txt);
       logMessage(name + " hit a Mystery tile — " + txt);
-      popTileReveal(e.at, "mystery", "❓");
     } else if (e.kind === "shieldBlock") {
       showToast(name + "'s shield blocked the snake!");
       logMessage(name + "'s shield blocked a snake at " + e.at + ".");
@@ -1889,9 +1907,8 @@ function scheduleAIIfNeeded() {
   setTimeout(function () {
     if (gameMode !== "local" || !localState || localState.winner) return;
     if (localState.current_turn !== role || busyAnimating) return;
-    const chosen = aiPolicy.choosePowerUp(localState, role, seat.difficulty);
     const roll = rollDie();
-    applyLocalRoll(roll, chosen);
+    applyLocalRoll(roll);
   }, AI_THINK_MS);
 }
 
@@ -2049,7 +2066,6 @@ function startLocalGame() {
     rng: Math.random
   });
 
-  armedPowerUp = null;
   prevPositions = {};
   localState.seats.forEach(function (s) { prevPositions[s.role] = 0; });
   animateMoves = false;
@@ -2083,7 +2099,6 @@ function restartLocalGame() {
     rng: Math.random
   });
 
-  armedPowerUp = null;
   prevPositions = {};
   localState.seats.forEach(function (s) { prevPositions[s.role] = 0; });
   animateMoves = false;

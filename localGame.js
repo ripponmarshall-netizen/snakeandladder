@@ -2,9 +2,10 @@
    unit-tested like gameLogic.js. It owns the local match state and produces game
    rows in the EXACT shape app.js's render pipeline reads, so the entire existing
    animation/win pipeline is reused without changes. 3-4 players and AI seats live
-   here only. Power-up RULES (this module + gameLogic.resolveMoveWithPowerUps) are
-   MIRRORED server-side in the roll_dice SQL for online play — keep the two in sync:
-   identical power-up ids, INVENTORY_CAP, tile counts and MYSTERY_OUTCOMES order. */
+   here only. Power-ups apply instantly on landing (no inventory / click-to-use).
+   Power-up RULES (this module + gameLogic.resolveMoveWithPowerUps) are MIRRORED
+   server-side in the roll_dice SQL for online play — keep the two in sync: identical
+   power-up ids, tile counts (6 power / 3 mystery) and MYSTERY_OUTCOMES order. */
 
 import { resolveMoveWithPowerUps } from "./gameLogic.js";
 
@@ -22,9 +23,13 @@ export const POWER_UPS = {
 };
 
 const POWER_IDS = Object.keys(POWER_UPS);
-const INVENTORY_CAP = 2;
 const DEFAULT_POWER_TILES = 6;
 const DEFAULT_MYSTERY_TILES = 3;
+
+/* Power-ups apply instantly on landing (no inventory / click-to-use). The UI plays
+   a slow reveal then the effect takes hold; REVEAL_DELAY keeps a swapped-in opponent's
+   slide in step with that reveal (mirror of playTileReveal's duration in app.js). */
+const REVEAL_DELAY = 1500;
 
 /* Instant effects when landing on a mystery tile. Order MUST match the server. */
 export const MYSTERY_OUTCOMES = ["advance", "retreat", "grant", "extra"];
@@ -101,12 +106,10 @@ export function createLocalGame(config) {
   });
 
   const positions = {};
-  const inventory = {};
   const pending = {};
   const frozen = {};
   seats.forEach(function (s) {
     positions[s.role] = 0;
-    inventory[s.role] = [];
     pending[s.role] = {};
     frozen[s.role] = false;
   });
@@ -124,7 +127,6 @@ export function createLocalGame(config) {
     version: 1,
     positions: positions,
     seats: seats,
-    inventory: inventory,
     pending: pending,
     frozen: frozen,
     powerTiles: powerTiles,
@@ -194,8 +196,9 @@ function advanceTurn(state, extraTurn, events) {
 }
 
 /* Instant effect for a mystery tile. Mutates state and returns a result the UI
-   uses for FX. MUST mirror the server's mystery logic (same outcome order). */
-function applyMystery(state, role, random) {
+   uses for FX. MUST mirror the server's mystery logic (same outcome order). The
+   caller sets state.lastMoves[role] (with the final position) after this returns. */
+function applyMystery(state, role, random, events, at) {
   const idx = Math.floor(random() * MYSTERY_OUTCOMES.length);
   const kind = MYSTERY_OUTCOMES[idx];
   const from = state.positions[role];
@@ -204,10 +207,12 @@ function applyMystery(state, role, random) {
   if (kind === "advance" || kind === "retreat") {
     const to = kind === "advance" ? Math.min(100, from + MYSTERY_STEP) : Math.max(0, from - MYSTERY_STEP);
     state.positions[role] = to;
-    state.lastMoves[role] = { relocate: true, from: from, to: to, newPos: to, jumpType: null, bounced: false };
     result.to = to;
   } else if (kind === "grant") {
-    result.granted = acquirePowerUp(state, role, random).granted;
+    const id = POWER_IDS[Math.floor(random() * POWER_IDS.length)];
+    const fx = applyTilePower(state, role, id, random, events, at);
+    result.granted = id;
+    result.extraTurn = fx.extraTurn;
   } else { // extra
     result.extraTurn = true;
   }
@@ -228,26 +233,49 @@ export function leadingRoleExcluding(state, role) {
   return best;
 }
 
-function consume(state, role, id) {
-  const inv = state.inventory[role];
-  const at = inv.indexOf(id);
-  if (at >= 0) inv.splice(at, 1);
-}
+/* Apply a power-up's effect instantly when landing on a power tile (or via a
+   mystery 'grant'). Mutates state, pushes a `powerup` event, and returns
+   { extraTurn }. `at` is the landed square (where the UI plays the reveal).
+   - shield   : a standing shield that blocks the NEXT snake, then clears.
+   - doubleRoll/extraRoll: an extra turn (a double can't retro-apply post-move).
+   - swap     : swap with the current leader now (the leader gets a delayed slide).
+   - freeze   : freeze the current leader's next turn.
+   MUST mirror the server's instant-power resolution. */
+function applyTilePower(state, role, id, random, events, at) {
+  const result = { extraTurn: false };
 
-/* Grant a random power-up to a role (capped). Returns { granted: id|null }. */
-export function acquirePowerUp(state, role, rng) {
-  const random = rng || Math.random;
-  const inv = state.inventory[role];
-  if (inv.length >= INVENTORY_CAP) return { granted: null };
-  const id = POWER_IDS[Math.floor(random() * POWER_IDS.length)];
-  inv.push(id);
-  return { granted: id };
+  if (id === "shield") {
+    state.pending[role] = state.pending[role] || {};
+    state.pending[role].shield = true;
+    events.push({ type: "powerup", id: "shield", role: role, at: at, instant: true });
+  } else if (id === "doubleRoll" || id === "extraRoll") {
+    result.extraTurn = true;
+    events.push({ type: "powerup", id: id, role: role, at: at, instant: true });
+  } else if (id === "freeze") {
+    const target = leadingRoleExcluding(state, role);
+    if (target && target !== role) state.frozen[target] = true;
+    events.push({ type: "powerup", id: "freeze", role: role, target: target || null, at: at, instant: true });
+  } else if (id === "swap") {
+    const leader = leadingRoleExcluding(state, role);
+    events.push({ type: "powerup", id: "swap", role: role, with: leader || null, at: at, instant: true });
+    if (leader && leader !== role) {
+      const a = state.positions[role];
+      const b = state.positions[leader];
+      state.positions[role] = b;
+      state.positions[leader] = a;
+      state.lastMoves[leader] = {
+        relocate: true, from: b, to: a, newPos: a, jumpType: null, bounced: false, delay: REVEAL_DELAY
+      };
+    }
+  }
+
+  return result;
 }
 
 /* Apply a single turn. `roll` (1..6) is injected so this stays deterministic for
-   tests. `chosenPowerUp` is the id the current player armed (or null). Returns the
-   mutated state plus an `events` list the UI uses to drive sound/log/FX. */
-export function stepRoll(state, roll, chosenPowerUp, rng) {
+   tests. Power-ups are no longer armed — landing on a hidden tile applies its effect
+   instantly. Returns the mutated state plus an `events` list the UI uses for FX. */
+export function stepRoll(state, roll, rng) {
   const random = rng || Math.random;
   const role = state.current_turn;
   const events = [];
@@ -256,41 +284,11 @@ export function stepRoll(state, roll, chosenPowerUp, rng) {
   state.pending[role] = pending;
   state.lastMoves = {};
 
-  let effectiveRoll = roll;
-  let usedSwap = false;
   let extraTurn = false;
-
-  if (chosenPowerUp && state.inventory[role].indexOf(chosenPowerUp) >= 0) {
-    if (chosenPowerUp === "doubleRoll") {
-      const second = 1 + Math.floor(random() * 6);
-      effectiveRoll = roll + second;
-      consume(state, role, "doubleRoll");
-      events.push({ type: "powerup", id: "doubleRoll", role: role, rolls: [roll, second], total: effectiveRoll });
-    } else if (chosenPowerUp === "shield") {
-      pending.shield = true;
-      consume(state, role, "shield");
-      events.push({ type: "powerup", id: "shield", role: role });
-    } else if (chosenPowerUp === "swap") {
-      usedSwap = true;
-      consume(state, role, "swap");
-      events.push({ type: "powerup", id: "swap", role: role });
-    } else if (chosenPowerUp === "extraRoll") {
-      extraTurn = true;
-      consume(state, role, "extraRoll");
-      events.push({ type: "powerup", id: "extraRoll", role: role });
-    } else if (chosenPowerUp === "freeze") {
-      const target = leadingRoleExcluding(state, role);
-      if (target && target !== role) {
-        state.frozen[target] = true;
-        consume(state, role, "freeze");
-        events.push({ type: "powerup", id: "freeze", role: role, target: target });
-      }
-    }
-  }
 
   state.last_roll = roll;
 
-  const move = resolveMoveWithPowerUps(fromPos, effectiveRoll, state.jumps, { shield: pending.shield });
+  const move = resolveMoveWithPowerUps(fromPos, roll, state.jumps, { shield: pending.shield });
 
   if (move.shieldConsumed) {
     pending.shield = false;
@@ -298,7 +296,7 @@ export function stepRoll(state, roll, chosenPowerUp, rng) {
   }
 
   if (move.bounced) {
-    events.push({ type: "bounce", role: role, at: fromPos, roll: effectiveRoll });
+    events.push({ type: "bounce", role: role, at: fromPos, roll: roll });
   } else {
     state.positions[role] = move.newPos;
     state.lastMoves[role] = {
@@ -306,31 +304,36 @@ export function stepRoll(state, roll, chosenPowerUp, rng) {
     };
     events.push({
       type: "move", role: role, from: fromPos, landing: move.landing,
-      to: move.newPos, jumpType: move.jumpType, roll: effectiveRoll
+      to: move.newPos, jumpType: move.jumpType, roll: roll
     });
 
     if (state.config.powerUpsEnabled && move.newPos !== 100) {
-      if (state.powerTiles[move.newPos]) {
-        const granted = acquirePowerUp(state, role, random).granted;
-        if (granted) events.push({ type: "acquire", role: role, id: granted, at: move.newPos });
-      } else if (state.mysteryTiles && state.mysteryTiles[move.newPos]) {
-        const outcome = applyMystery(state, role, random);
+      const landSq = move.newPos;
+      if (state.powerTiles[landSq]) {
+        const id = POWER_IDS[Math.floor(random() * POWER_IDS.length)];
+        const fx = applyTilePower(state, role, id, random, events, landSq);
+        if (fx.extraTurn) extraTurn = true;
+        state.lastMoves[role] = {
+          landing: landSq, newPos: state.positions[role], jumpType: null, bounced: false,
+          reveal: { kind: "power", id: id }
+        };
+      } else if (state.mysteryTiles && state.mysteryTiles[landSq]) {
+        const outcome = applyMystery(state, role, random, events, landSq);
         if (outcome.extraTurn) extraTurn = true;
-        events.push({ type: "mystery", role: role, at: move.newPos, outcome: outcome });
+        let reveal;
+        if (outcome.kind === "grant") {
+          /* applyMystery already applied the granted power + pushed its event;
+             reveal it as the concrete power-up so the player sees what they got. */
+          reveal = { kind: "power", id: outcome.granted };
+        } else {
+          events.push({ type: "mystery", role: role, at: landSq, outcome: outcome });
+          reveal = { kind: "mystery", outcome: outcome };
+        }
+        state.lastMoves[role] = {
+          landing: landSq, newPos: state.positions[role], jumpType: null, bounced: false,
+          reveal: reveal
+        };
       }
-    }
-  }
-
-  if (usedSwap && !move.bounced) {
-    const leader = leadingRoleExcluding(state, role);
-    if (leader && leader !== role) {
-      const a = state.positions[role];
-      const b = state.positions[leader];
-      state.positions[role] = b;
-      state.positions[leader] = a;
-      state.lastMoves[role] = { relocate: true, from: a, to: b, newPos: b, jumpType: null, bounced: false };
-      state.lastMoves[leader] = { relocate: true, from: b, to: a, newPos: a, jumpType: null, bounced: false };
-      events.push({ type: "swap", role: role, with: leader });
     }
   }
 
