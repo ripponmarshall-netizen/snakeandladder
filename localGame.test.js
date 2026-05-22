@@ -5,6 +5,7 @@ import {
   stepRoll,
   acquirePowerUp,
   generatePowerTiles,
+  generateMysteryTiles,
   leadingRoleExcluding,
   isHumanTurn
 } from "./localGame.js";
@@ -119,6 +120,56 @@ describe("stepRoll", () => {
     const { state, events } = stepRoll(s, 5);
     expect(state.positions.player1).toBe(98);
     expect(events.some((e) => e.type === "bounce")).toBe(true);
+  });
+});
+
+describe("new power-ups", () => {
+  it("extra-roll keeps the same player's turn", () => {
+    const s = game();
+    s.inventory.player1 = ["extraRoll"];
+    const { state } = stepRoll(s, 3, "extraRoll");
+    expect(state.current_turn).toBe("player1");
+    expect(state.positions.player1).toBe(3);
+    expect(s.inventory.player1.length).toBe(0);
+  });
+
+  it("freeze skips the leader's next turn (and clears the flag)", () => {
+    const s = game({ seats: [{ name: "A" }, { name: "B" }, { name: "C" }] });
+    s.positions.player2 = 50; // player2 is the leader
+    s.inventory.player1 = ["freeze"];
+    const { state, events } = stepRoll(s, 1, "freeze");
+    expect(events.some((e) => e.type === "frozenSkip" && e.role === "player2")).toBe(true);
+    expect(state.frozen.player2).toBe(false);
+    expect(state.current_turn).toBe("player3");
+  });
+
+  it("mystery 'advance' moves the player forward", () => {
+    const s = game({ powerUpsEnabled: true });
+    s.powerTiles = {};
+    s.mysteryTiles = { 7: true };
+    s.positions.player1 = 5;
+    const { state, events } = stepRoll(s, 2, null, () => 0); // land 7, idx 0 = advance +4
+    expect(state.positions.player1).toBe(11);
+    expect(events.find((e) => e.type === "mystery").outcome.kind).toBe("advance");
+  });
+
+  it("mystery 'extra' grants another turn", () => {
+    const s = game({ powerUpsEnabled: true });
+    s.powerTiles = {};
+    s.mysteryTiles = { 7: true };
+    s.positions.player1 = 5;
+    const { state, events } = stepRoll(s, 2, null, () => 0.9); // idx 3 = extra
+    expect(events.find((e) => e.type === "mystery").outcome.kind).toBe("extra");
+    expect(state.current_turn).toBe("player1");
+  });
+
+  it("generateMysteryTiles avoids endpoints, jumps and power tiles", () => {
+    const tiles = generateMysteryTiles({ 4: 14, 16: 6 }, () => 0.3, 3, { 50: true });
+    expect(tiles[1]).toBeUndefined();
+    expect(tiles[100]).toBeUndefined();
+    expect(tiles[4]).toBeUndefined();
+    expect(tiles[16]).toBeUndefined();
+    expect(tiles[50]).toBeUndefined();
   });
 });
 

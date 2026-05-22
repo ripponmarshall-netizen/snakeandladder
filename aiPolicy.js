@@ -24,15 +24,18 @@ export function choosePowerUp(state, role, difficulty) {
   const pos = state.positions[role];
   const distToWin = 100 - pos;
 
+  const leader = leadingRoleExcluding(state, role);
+  const leadPos = leader ? state.positions[leader] : 0;
+
   if (difficulty === "hard") {
-    // Steal the lead late when well behind.
-    const leader = leadingRoleExcluding(state, role);
-    if (has("swap") && leader) {
-      const lead = state.positions[leader];
-      if (lead - pos >= 15 && 100 - lead <= 12) return "swap";
-    }
     // Guard against a snake we could land on next.
     if (has("shield") && snakeReachable(state.jumps, pos)) return "shield";
+    // Steal the lead late when well behind.
+    if (has("swap") && leader && leadPos - pos >= 15 && 100 - leadPos <= 12) return "swap";
+    // Freeze a leader who's about to win.
+    if (has("freeze") && leader && leadPos > pos && 100 - leadPos <= 12) return "freeze";
+    // A free extra turn is almost always good (skip only right at the finish).
+    if (has("extraRoll") && distToWin > 1) return "extraRoll";
     // Push hard early, but never risk wasting a double near the finish.
     if (has("doubleRoll") && distToWin > 12) return "doubleRoll";
     return null;
@@ -40,6 +43,8 @@ export function choosePowerUp(state, role, difficulty) {
 
   // medium
   if (has("shield") && snakeReachable(state.jumps, pos)) return "shield";
+  if (has("extraRoll") && distToWin > 6) return "extraRoll";
+  if (has("freeze") && leader && leadPos > pos && 100 - leadPos <= 10) return "freeze";
   if (has("doubleRoll") && distToWin > 25) return "doubleRoll";
   return null;
 }
