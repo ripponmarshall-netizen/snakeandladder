@@ -3,13 +3,12 @@ import {
   createLocalGame,
   toGameRow,
   stepRoll,
-  acquirePowerUp,
   generatePowerTiles,
   generateMysteryTiles,
   leadingRoleExcluding,
-  isHumanTurn
+  isHumanTurn,
+  POWER_UPS
 } from "./localGame.js";
-import { choosePowerUp, snakeReachable } from "./aiPolicy.js";
 
 function game(extra) {
   return createLocalGame(Object.assign({
@@ -21,6 +20,13 @@ function game(extra) {
     ]
   }, extra || {}));
 }
+
+/* Deterministic rng that always returns v (used to force a tile/power outcome). */
+function rngVal(v) {
+  return function () { return v; };
+}
+
+const POWER_IDS = Object.keys(POWER_UPS); // [shield, doubleRoll, swap, extraRoll, freeze]
 
 describe("toGameRow", () => {
   it("emits the currentGame shape with no power-up leakage", () => {
@@ -53,12 +59,6 @@ describe("stepRoll", () => {
     expect(events.find((e) => e.type === "move").to).toBe(3);
   });
 
-  it("climbs a ladder", () => {
-    const s = game();
-    const { state } = stepRoll(s, 3); // 0->3, no jump... start at 1? positions start 0
-    expect(state.positions.player1).toBe(3);
-  });
-
   it("detects a winner on exactly 100 and does not rotate", () => {
     const s = game();
     s.positions.player1 = 97;
@@ -69,42 +69,14 @@ describe("stepRoll", () => {
     expect(events.some((e) => e.type === "win")).toBe(true);
   });
 
-  it("shield negates a snake when armed", () => {
+  it("a standing shield blocks the next snake, then clears", () => {
     const s = game();
     s.positions.player1 = 13;
-    s.inventory.player1 = ["shield"];
-    const { state, events } = stepRoll(s, 3, "shield"); // lands on 16 (snake -> 6)
+    s.pending.player1 = { shield: true }; // gained earlier from a hidden tile
+    const { state, events } = stepRoll(s, 3); // 13 -> 16 (snake -> 6), shield negates it
     expect(state.positions.player1).toBe(16);
-    expect(s.inventory.player1.length).toBe(0);
+    expect(s.pending.player1.shield).toBe(false);
     expect(events.some((e) => e.type === "shieldBlock")).toBe(true);
-  });
-
-  it("double-roll sums both dice", () => {
-    const s = game();
-    s.positions.player1 = 10;
-    s.inventory.player1 = ["doubleRoll"];
-    const { state, events } = stepRoll(s, 3, "doubleRoll", () => 0); // second die = 1
-    expect(state.positions.player1).toBe(14); // 10 + (3 + 1)
-    expect(events.find((e) => e.type === "powerup").total).toBe(4);
-  });
-
-  it("swap exchanges position with the leader", () => {
-    const s = game();
-    s.positions.player1 = 5;
-    s.positions.player2 = 80;
-    s.inventory.player1 = ["swap"];
-    const { state } = stepRoll(s, 2, "swap"); // 5 -> 7, then swap with player2(80)
-    expect(state.positions.player1).toBe(80);
-    expect(state.positions.player2).toBe(7);
-  });
-
-  it("acquires a power-up when landing on a power tile", () => {
-    const s = game({ powerUpsEnabled: true });
-    s.powerTiles = { 7: true };
-    s.positions.player1 = 5;
-    const { state, events } = stepRoll(s, 2, null, () => 0); // -> 7, acquire POWER_IDS[0]
-    expect(state.inventory.player1.length).toBe(1);
-    expect(events.some((e) => e.type === "acquire")).toBe(true);
   });
 
   it("rotates through 3-4 players", () => {
@@ -123,34 +95,86 @@ describe("stepRoll", () => {
   });
 });
 
-describe("new power-ups", () => {
-  it("extra-roll keeps the same player's turn", () => {
-    const s = game();
-    s.inventory.player1 = ["extraRoll"];
-    const { state } = stepRoll(s, 3, "extraRoll");
-    expect(state.current_turn).toBe("player1");
-    expect(state.positions.player1).toBe(3);
-    expect(s.inventory.player1.length).toBe(0);
+describe("instant power-up tiles", () => {
+  it("applies a power-up instantly on landing (no inventory) + flags a reveal", () => {
+    const s = game({ powerUpsEnabled: true });
+    s.powerTiles = { 7: true };
+    s.mysteryTiles = {};
+    s.positions.player1 = 5;
+    const { state, events } = stepRoll(s, 2, rngVal(0)); // -> 7, POWER_IDS[0] = shield
+    expect("inventory" in state).toBe(false);
+    const pu = events.find((e) => e.type === "powerup");
+    expect(pu).toBeTruthy();
+    expect(pu.id).toBe("shield");
+    expect(pu.instant).toBe(true);
+    // Shield is a standing protection set on the role.
+    expect(state.pending.player1.shield).toBe(true);
+    // The move carries a reveal descriptor for the UI.
+    expect(state.lastMoves.player1.reveal).toEqual({ kind: "power", id: "shield" });
   });
 
-  it("freeze skips the leader's next turn (and clears the flag)", () => {
+  it("a Double Roll tile grants an extra turn", () => {
+    const s = game({ powerUpsEnabled: true });
+    s.powerTiles = { 7: true };
+    s.mysteryTiles = {};
+    s.positions.player1 = 5;
+    const { state, events } = stepRoll(s, 2, rngVal(0.25)); // POWER_IDS[1] = doubleRoll
+    expect(events.find((e) => e.type === "powerup").id).toBe("doubleRoll");
+    expect(state.current_turn).toBe("player1"); // kept the turn
+  });
+
+  it("an Extra Roll tile grants an extra turn", () => {
+    const s = game({ powerUpsEnabled: true });
+    s.powerTiles = { 7: true };
+    s.mysteryTiles = {};
+    s.positions.player1 = 5;
+    const { state } = stepRoll(s, 2, rngVal(0.7)); // POWER_IDS[3] = extraRoll
+    expect(state.current_turn).toBe("player1");
+  });
+
+  it("a Swap tile exchanges position with the leader immediately", () => {
+    const s = game();
+    s.config.powerUpsEnabled = true;
+    s.powerTiles = { 7: true };
+    s.mysteryTiles = {};
+    s.positions.player1 = 5;
+    s.positions.player2 = 80;
+    const { state, events } = stepRoll(s, 2, rngVal(0.5)); // -> 7, POWER_IDS[2] = swap
+    expect(state.positions.player1).toBe(80);
+    expect(state.positions.player2).toBe(7);
+    const pu = events.find((e) => e.type === "powerup");
+    expect(pu.id).toBe("swap");
+    expect(pu.with).toBe("player2");
+    // The swapped-in opponent gets a delayed relocate for the UI.
+    expect(state.lastMoves.player2.relocate).toBe(true);
+    expect(state.lastMoves.player2.delay).toBeGreaterThan(0);
+  });
+
+  it("a Freeze tile skips the leader's next turn (and clears the flag)", () => {
     const s = game({ seats: [{ name: "A" }, { name: "B" }, { name: "C" }] });
-    s.positions.player2 = 50; // player2 is the leader
-    s.inventory.player1 = ["freeze"];
-    const { state, events } = stepRoll(s, 1, "freeze");
+    s.config.powerUpsEnabled = true;
+    s.powerTiles = { 7: true };
+    s.mysteryTiles = {};
+    s.positions.player1 = 5;
+    s.positions.player2 = 50; // leader, and the next seat — so it's skipped right away
+    const { state, events } = stepRoll(s, 2, rngVal(0.9)); // POWER_IDS[4] = freeze
+    expect(events.find((e) => e.type === "powerup").id).toBe("freeze");
     expect(events.some((e) => e.type === "frozenSkip" && e.role === "player2")).toBe(true);
     expect(state.frozen.player2).toBe(false);
     expect(state.current_turn).toBe("player3");
   });
+});
 
+describe("mystery tiles", () => {
   it("mystery 'advance' moves the player forward", () => {
     const s = game({ powerUpsEnabled: true });
     s.powerTiles = {};
     s.mysteryTiles = { 7: true };
     s.positions.player1 = 5;
-    const { state, events } = stepRoll(s, 2, null, () => 0); // land 7, idx 0 = advance +4
+    const { state, events } = stepRoll(s, 2, rngVal(0)); // land 7, idx 0 = advance +4
     expect(state.positions.player1).toBe(11);
     expect(events.find((e) => e.type === "mystery").outcome.kind).toBe("advance");
+    expect(state.lastMoves.player1.reveal.kind).toBe("mystery");
   });
 
   it("mystery 'extra' grants another turn", () => {
@@ -158,9 +182,21 @@ describe("new power-ups", () => {
     s.powerTiles = {};
     s.mysteryTiles = { 7: true };
     s.positions.player1 = 5;
-    const { state, events } = stepRoll(s, 2, null, () => 0.9); // idx 3 = extra
+    const { state, events } = stepRoll(s, 2, rngVal(0.9)); // idx 3 = extra
     expect(events.find((e) => e.type === "mystery").outcome.kind).toBe("extra");
     expect(state.current_turn).toBe("player1");
+  });
+
+  it("mystery 'grant' applies an instant power + reveals it as that power", () => {
+    const s = game({ powerUpsEnabled: true });
+    s.powerTiles = {};
+    s.mysteryTiles = { 7: true };
+    s.positions.player1 = 5;
+    const { state, events } = stepRoll(s, 2, rngVal(0.5)); // idx 2 = grant
+    // grant fed the same rng -> POWER_IDS[2] = swap; no other seat ahead so no move.
+    expect(events.some((e) => e.type === "powerup")).toBe(true);
+    expect(state.lastMoves.player1.reveal).toEqual({ kind: "power", id: "swap" });
+    expect("inventory" in state).toBe(false);
   });
 
   it("generateMysteryTiles avoids endpoints, jumps and power tiles", () => {
@@ -174,12 +210,6 @@ describe("new power-ups", () => {
 });
 
 describe("helpers", () => {
-  it("acquirePowerUp respects the inventory cap", () => {
-    const s = game();
-    s.inventory.player1 = ["shield", "swap"];
-    expect(acquirePowerUp(s, "player1", () => 0).granted).toBe(null);
-  });
-
   it("generatePowerTiles avoids 1, 100 and jump squares", () => {
     const jumps = { 4: 14, 16: 6 };
     const tiles = generatePowerTiles(jumps, () => 0.5, 5);
@@ -201,46 +231,5 @@ describe("helpers", () => {
     expect(isHumanTurn(s)).toBe(true);
     s.current_turn = "player2";
     expect(isHumanTurn(s)).toBe(false);
-  });
-});
-
-describe("aiPolicy.choosePowerUp", () => {
-  const jumps = { 16: 6, 40: 22, 99: 21 };
-
-  it("easy never uses a power-up", () => {
-    const s = game();
-    s.inventory.player2 = ["shield", "doubleRoll"];
-    s.positions.player2 = 13;
-    expect(choosePowerUp(s, "player2", "easy")).toBe(null);
-  });
-
-  it("snakeReachable detects a snake within the next roll", () => {
-    expect(snakeReachable(jumps, 13)).toBe(true); // 13+3 = 16 is a snake
-    expect(snakeReachable(jumps, 50)).toBe(false);
-  });
-
-  it("medium arms a shield when a snake is reachable", () => {
-    const s = game();
-    s.jumps = jumps;
-    s.inventory.player2 = ["shield"];
-    s.positions.player2 = 13;
-    expect(choosePowerUp(s, "player2", "medium")).toBe("shield");
-  });
-
-  it("hard avoids a double-roll near the finish", () => {
-    const s = game();
-    s.jumps = jumps;
-    s.inventory.player2 = ["doubleRoll"];
-    s.positions.player2 = 95; // distToWin 5 <= 12
-    expect(choosePowerUp(s, "player2", "hard")).toBe(null);
-  });
-
-  it("hard uses swap to steal a late lead when well behind", () => {
-    const s = game();
-    s.jumps = jumps;
-    s.inventory.player1 = ["swap"];
-    s.positions.player1 = 60;
-    s.positions.player2 = 92; // lead 32 >= 15, 100-92=8 <= 12
-    expect(choosePowerUp(s, "player1", "hard")).toBe("swap");
   });
 });
